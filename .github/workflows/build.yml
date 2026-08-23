@@ -1,43 +1,45 @@
-name: Build UWP (Windows 10 Mobile)
+name: Build & Deploy UWP Test Package (Windows 10 Mobile)
 
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    # windows-2019 có sẵn VS 2019 + Windows 10 SDK 10.0.19041 (project đã retarget sang SDK này).
-    runs-on: windows-2019
-    env:
-      # Nếu bạn đặt secrets CERT_BASE64 + CERT_PASSPHRASE, appx sẽ được ký tự động.
-      # CERT_BASE64 = nội dung file .pfx mã hóa Base64. CERT_PASSPHRASE = mật khẩu pfx.
-      CERT_BASE64: ${{ secrets.CERT_BASE64 }}
-
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        # x86: kiểm tra biên dịch nhanh. ARM: tạo gói cài được lên máy W10M thật.
-        arch: [ x86, ARM ]
+        arch: [ ARM, x86 ]
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v1.3
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Ensure Assets Exist
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "src/WebSystemUwp/Assets/Square150x150Logo.png")) {
+            & (Join-Path $env:GITHUB_WORKSPACE 'scripts\generate-assets.ps1')
+          }
 
       - name: Restore NuGet packages
-        run: msbuild WebSystemUwp.csproj /t:Restore /p:Configuration=Release /p:Platform=${{ matrix.arch }}
+        run: msbuild src/WebSystemUwp/WebSystemUwp.csproj /t:Restore /p:Configuration=Release /p:Platform=${{ matrix.arch }}
 
-      # Build + đóng gói .appx. Cần Assets/*.png tồn tại — nếu thiếu, chạy:
-      #   powershell -ExecutionPolicy Bypass -File scripts\generate-assets.ps1
-      - name: Build + package .appx
+      - name: Build & Package .appx
         shell: pwsh
         run: >
-          msbuild WebSystemUwp.csproj
+          msbuild src/WebSystemUwp/WebSystemUwp.csproj
           /p:Configuration=Release
           /p:Platform=${{ matrix.arch }}
           /p:AppxBundle=Never
@@ -45,25 +47,111 @@ jobs:
           /p:AppxPackageSigningEnabled=false
           /m
 
-      - name: Sign .appx (if cert provided via secrets)
-        if: env.CERT_BASE64 != ''
+      - name: Prepare Certificate and Sign .appx
         shell: pwsh
         env:
+          CERT_BASE64: ${{ secrets.CERT_BASE64 }}
           CERT_PASSPHRASE: ${{ secrets.CERT_PASSPHRASE }}
         run: |
-          $bytes = [Convert]::FromBase64String($env:CERT_BASE64)
-          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
-          [IO.File]::WriteAllBytes($pfx, $bytes)
-          $appx = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'AppPackages') -Recurse -Filter *.appx |
+          $appx = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'src\WebSystemUwp\AppPackages') -Recurse -Filter *.appx |
             Select-Object -First 1 -ExpandProperty FullName
-          if (-not $appx) { Write-Warning "Không tìm thấy .appx để ký."; exit 0 }
-          & (Join-Path $env:GITHUB_WORKSPACE 'scripts\sign-appx.ps1') -AppxPath $appx -PfxPath $pfx -Password $env:CERT_PASSPHRASE
+          if (-not $appx) {
+            $appx = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'src\WebSystemUwp\bin') -Recurse -Filter *.appx |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
 
-      - name: Upload .appx artifact
+          if (-not $appx) {
+            Write-Error "Không tìm thấy file .appx sau khi build!"
+            exit 1
+          }
+
+          Write-Host "Tìm thấy file package: $appx"
+          $outDir = Join-Path $env:GITHUB_WORKSPACE "output_${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "WebSystemUwp.pfx"
+          $cerPath = Join-Path $outDir "WebSystemUwp.cer"
+          $password = "Wp10TestPass"
+
+          if ($env:CERT_BASE64) {
+            Write-Host "Sử dụng Certificate từ GitHub Secrets..."
+            $bytes = [Convert]::FromBase64String($env:CERT_BASE64)
+            [IO.File]::WriteAllBytes($pfxPath, $bytes)
+            if ($env:CERT_PASSPHRASE) { $password = $env:CERT_PASSPHRASE }
+          } else {
+            Write-Host "Tạo Test Self-Signed Certificate cho CN=WebSystemUwp..."
+            $cert = New-SelfSignedCertificate -Type Custom `
+              -Subject "CN=WebSystemUwp" `
+              -KeyUsage DigitalSignature `
+              -FriendlyName "WebSystemUwp Test Cert" `
+              -CertStoreLocation "Cert:\CurrentUser\My" `
+              -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+            $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+            Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePassword | Out-Null
+            Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
+            Write-Host "Đã xuất public certificate (.cer) ra: $cerPath"
+          }
+
+          # Ký package appx
+          & (Join-Path $env:GITHUB_WORKSPACE 'scripts\sign-appx.ps1') -AppxPath $appx -PfxPath $pfxPath -Password $password
+
+          # Copy file appx đã ký vào output
+          $destAppx = Join-Path $outDir "WebSystemUwp_${{ matrix.arch }}.appx"
+          Copy-Item -Path $appx -Destination $destAppx -Force
+          Write-Host "Đã chuẩn bị xong artifact tại: $destAppx"
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: WebSystemUwp-${{ matrix.arch }}
-          path: |
-            AppPackages\**\*.appx
-            Bin\**\*.appx
-          if-no-files-found: warn
+          path: output_${{ matrix.arch }}/*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p release_files
+          find artifacts -type f \( -name "*.appx" -o -name "*.cer" \) -exec cp {} release_files/ \;
+          ls -la release_files/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: release_files/*
+          generate_release_notes: true
+
+      - name: Create or Update Test Build Release
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-build
+          name: "Windows 10 Mobile Test Build (Sản phẩm Test)"
+          body: |
+            ### 📱 Bản cài đặt Test Windows 10 Mobile (UWP)
+            
+            Đây là bản build test tự động từ nhánh `main`.
+            
+            #### 📦 Tải về:
+            - **`WebSystemUwp_ARM.appx`**: Dành cho điện thoại Windows 10 Mobile thật (Lumia 950, 640, v.v.)
+            - **`WebSystemUwp_x86.appx`**: Dành cho máy ảo/PC x86
+            - **`WebSystemUwp.cer`**: Chứng chỉ thử nghiệm (bắt buộc cài lên điện thoại trước khi cài `.appx`)
+            
+            #### 🛠️ Hướng dẫn cài đặt lên điện thoại:
+            1. Trên điện thoại: Vào **Cài đặt** -> **Cập nhật & bảo mật** -> **Dành cho nhà phát triển** -> Chọn **Chế độ nhà phát triển** (Developer Mode).
+            2. Chép file `WebSystemUwp.cer` và `WebSystemUwp_ARM.appx` vào điện thoại.
+            3. Dùng ứng dụng **File Explorer** trên điện thoại:
+               - Mở file `WebSystemUwp.cer` -> Chọn cài đặt chứng chỉ vào máy.
+               - Mở file `WebSystemUwp_ARM.appx` -> Nhấn **Install** để cài đặt ứng dụng.
+          draft: false
+          prerelease: true
+          files: release_files/*
