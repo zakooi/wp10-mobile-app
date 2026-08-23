@@ -61,3 +61,10 @@ Nhật ký quyết định và điểm lệch so với mục tiêu của ngườ
 - **Phương án thay thế đã cân nhắc:** chỉ build x86 (an toàn hơn nhưng không cài được lên máy thật) — đã loại vì người dùng có thiết bị. Không ký trong CI nếu không có secrets — đó là hành vi mặc định, không ép người dùng tạo cert.
 - **Lệch so với mục tiêu người dùng:** KHÔNG — ngược lại, đáp ứng đúng nhu cầu "có thiết bị thật để test".
 
+## [2026-01-01] Ghi chú: chưa push được lên GitHub từ môi trường thi hành
+
+- **Trạng thái:** Accepted
+- **Quyết định:** Repo đã `git init` + commit (nhánh `feature/uwp-app`, commit `09b658c`), nhưng **chưa push** lên GitHub.
+- **Lý do:** Môi trường sandbox chặn TLS ra ngoài (`Invoke-RestMethod` và `curl.exe`/Schannel đều báo `SEC_E_NO_CREDENTIALS` khi bắt tay TLS với `api.github.com`). Đây là giới hạn **môi trường thi hành**, không phải lỗi mã nguồn hay token.
+- **Lệch so với mục tiêu người dùng:** CÓ — người dùng yêu cầu upload lên GitHub; bị chặn giữa chừng. Người dùng cần tự push (hướng dẫn trong README/phản hồi), hoặc chạy trên máy có kết nối TLS bình thường.
+
