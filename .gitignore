@@ -1,0 +1,36 @@
+# Build output
+bin/
+obj/
+AppPackages/
+BundleArtifacts/
+Generated Files/
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+packages/*.nupkg
+*.nuget.props
+*.nuget.targets
+
+# Test / temp
+TestResults/
+*.log
+
+# Local certs / secrets — KHÔNG đưa .pfx hoặc key lên GitHub
+*.pfx
+*.p12
+*.snk
+*.key
+
+# OS
+Thumbs.db
+Desktop.ini
