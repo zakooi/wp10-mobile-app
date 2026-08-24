@@ -26,7 +26,9 @@
   </Resources>
 
   <Applications>
-    <Application Id="App" EntryPoint="WebSystemUwp.App">
+    <Application Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="WebSystemUwp.App">
       <uap:VisualElements
         DisplayName="WebSystemUwp"
         Description="Modern web access tool for Windows 10 Mobile"
