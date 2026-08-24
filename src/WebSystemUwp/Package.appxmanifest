@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest">
+  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">
 
   <Identity
     Name="WebSystemUwp"
     Publisher="CN=WebSystemUwp"
     Version="1.0.0.0" />
+
+  <mp:PhoneIdentity PhoneProductId="f9c41a3e-1234-5678-abcd-000000000001" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 
   <Properties>
     <DisplayName>WebSystemUwp</DisplayName>
@@ -19,10 +21,9 @@
     <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.14393.0" MaxVersionTested="10.0.19041.0" />
   </Dependencies>
 
-  <Capabilities>
-    <!-- Cho phép truy cập mạng internet (HTTP/HTTPS) cho phần Web. -->
-    <Capability Name="internetClient" />
-  </Capabilities>
+  <Resources>
+    <Resource Language="x-generate" />
+  </Resources>
 
   <Applications>
     <Application Id="App" EntryPoint="WebSystemUwp.App">
@@ -37,4 +38,8 @@
       </uap:VisualElements>
     </Application>
   </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+  </Capabilities>
 </Package>

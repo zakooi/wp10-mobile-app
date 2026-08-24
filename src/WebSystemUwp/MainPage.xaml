@@ -25,22 +25,26 @@
             <!-- ===================== Tab WEB ===================== -->
             <PivotItem Header="Web">
                 <ScrollViewer>
-                    <StackPanel Margin="16,8,16,16" Spacing="8">
-                        <TextBlock Text="Nhập URL (HTTPS/HTTP)" />
+                    <StackPanel Margin="16,8,16,16">
+                        <TextBlock Text="Nhập URL (HTTPS/HTTP)" Margin="0,0,0,4" />
                         <TextBox x:Name="UrlTextBox"
                                  Text="https://example.com"
                                  InputScope="Url"
-                                 TextWrapping="Wrap" />
+                                 TextWrapping="Wrap"
+                                 Margin="0,0,0,8" />
                         <Button x:Name="FetchButton"
                                 Content="Tải nội dung"
-                                Click="FetchButton_Click" />
+                                Click="FetchButton_Click"
+                                Margin="0,0,0,8" />
                         <ProgressRing x:Name="FetchProgress"
                                       IsActive="False"
-                                      Visibility="Collapsed" />
+                                      Visibility="Collapsed"
+                                      Margin="0,0,0,8" />
                         <TextBlock x:Name="WebStatusText"
                                    TextWrapping="Wrap"
-                                   Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
-                        <TextBlock Text="Nội dung trả về:" Margin="0,8,0,0" />
+                                   Foreground="{ThemeResource SystemControlForegroundAccentBrush}"
+                                   Margin="0,0,0,8" />
+                        <TextBlock Text="Nội dung trả về:" Margin="0,8,0,4" />
                         <TextBox x:Name="WebResultBox"
                                  IsReadOnly="True"
                                  AcceptsReturn="True"
@@ -53,7 +57,7 @@
             <!-- ===================== Tab HỆ THỐNG ===================== -->
             <PivotItem Header="Hệ thống">
                 <ScrollViewer>
-                    <StackPanel Margin="16,8,16,16" Spacing="8">
+                    <StackPanel Margin="16,8,16,16">
                         <TextBlock Text="Thông tin thiết bị (không cần quyền cao)" />
                         <TextBox x:Name="DeviceInfoBox"
                                  IsReadOnly="True"
