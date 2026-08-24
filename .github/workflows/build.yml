@@ -23,13 +23,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install UWP Workload & SDK
+      - name: Install UWP Workload
         shell: pwsh
         run: |
           $vsPath = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          Write-Host "Cài đặt Windows 10 SDK 19041 và UWP workload vào $vsPath..."
+          Write-Host "Cài đặt UWP Workload vào $vsPath..."
           $proc = Start-Process -FilePath "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe" `
-            -ArgumentList "modify --installPath `"$vsPath`" --add Microsoft.VisualStudio.Component.Windows10SDK.19041 --add Microsoft.VisualStudio.Component.UWP.Support --quiet --norestart" `
+            -ArgumentList "modify --installPath `"$vsPath`" --add Microsoft.VisualStudio.Workload.Universal --includeRecommended --quiet --norestart" `
             -Wait -PassThru
           Write-Host "Installer hoàn tất với mã thoát: $($proc.ExitCode)"
 
