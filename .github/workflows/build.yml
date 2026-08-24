@@ -98,6 +98,9 @@ jobs:
           /p:AppxBundle=Never
           /p:GenerateAppxPackageOnBuild=true
           /p:AppxPackageSigningEnabled=false
+          "/p:WindowsSdkDir=C:\Program Files (x86)\Windows Kits\10\"
+          "/p:TargetPlatformSdkRootOverride=C:\Program Files (x86)\Windows Kits\10"
+          /p:TargetPlatformVersion=10.0.19041.0
           /m
 
       - name: Prepare Certificate and Sign .appx
