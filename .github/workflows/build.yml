@@ -23,59 +23,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fix UAP Reference Assemblies for MSBuild
-        shell: pwsh
-        run: |
-          # MSBuild tìm UAP reference assemblies tại đường dẫn cố định này:
-          $uapRefBase = "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\UAP"
-          $sdkVersion = "10.0.19041.0"
-          $targetPath  = "$uapRefBase\$sdkVersion"
-
-          # Kiểm tra xem SDK đã có trong Windows Kits chưa
-          $sdkRef = "C:\Program Files (x86)\Windows Kits\10\References\$sdkVersion"
-          $sdkUnion = "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\$sdkVersion"
-
-          Write-Host "SDK References path: $sdkRef — exists: $(Test-Path $sdkRef)"
-          Write-Host "SDK UnionMetadata path: $sdkUnion — exists: $(Test-Path $sdkUnion)"
-
-          if (Test-Path $targetPath) {
-            Write-Host "UAP Reference Assemblies đã tồn tại tại $targetPath"
-          } else {
-            Write-Host "Tạo thư mục UAP Reference Assemblies tại $targetPath ..."
-            New-Item -ItemType Directory -Force -Path $targetPath | Out-Null
-
-            if (Test-Path $sdkRef) {
-              Write-Host "Copy từ SDK References..."
-              Copy-Item -Path "$sdkRef\*" -Destination $targetPath -Recurse -Force
-            } else {
-              # Liệt kê xem Windows SDK có những version nào
-              Write-Host "Không có $sdkRef. Liệt kê các version SDK có trên runner:"
-              Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\References\" -ErrorAction SilentlyContinue
-              # Tải Windows 10 SDK 19041 standalone
-              Write-Host "Tải Windows 10 SDK 19041 standalone installer..."
-              $sdkInstaller = "$env:RUNNER_TEMP\winsdksetup.exe"
-              Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2120843" -OutFile $sdkInstaller -UseBasicParsing
-              Write-Host "Cài đặt SDK (chỉ component Windows SDK for UWP Managed Apps)..."
-              $p = Start-Process $sdkInstaller `
-                -ArgumentList "/features OptionId.UWPCpp /quiet /norestart /log $env:RUNNER_TEMP\sdk_install.log" `
-                -Wait -PassThru
-              Write-Host "SDK installer exit code: $($p.ExitCode)"
-              Get-Content "$env:RUNNER_TEMP\sdk_install.log" -Tail 20 -ErrorAction SilentlyContinue
-            }
-
-            # Nếu vẫn chưa có: tạo file contract placeholder để MSBuild không báo lỗi
-            if (-not (Test-Path "$targetPath\Windows.winmd")) {
-              Write-Host "Dùng UnionMetadata làm source..."
-              if (Test-Path $sdkUnion) {
-                Copy-Item -Path "$sdkUnion\*" -Destination $targetPath -Recurse -Force -ErrorAction SilentlyContinue
-              }
-            }
-          }
-
-          Write-Host "Nội dung $targetPath :"
-          Get-ChildItem $targetPath -ErrorAction SilentlyContinue | Select-Object Name | Select-Object -First 10
-
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -87,7 +34,9 @@ jobs:
           }
 
       - name: Restore NuGet packages
-        run: msbuild src/WebSystemUwp/WebSystemUwp.csproj /t:Restore /p:Configuration=Release /p:Platform=${{ matrix.arch }}
+        shell: pwsh
+        run: |
+          nuget restore src/WebSystemUwp/WebSystemUwp.csproj -PackagesDirectory packages
 
       - name: Build & Package .appx
         shell: pwsh
@@ -98,9 +47,6 @@ jobs:
           /p:AppxBundle=Never
           /p:GenerateAppxPackageOnBuild=true
           /p:AppxPackageSigningEnabled=false
-          "/p:WindowsSdkDir=C:\Program Files (x86)\Windows Kits\10\"
-          "/p:TargetPlatformSdkRootOverride=C:\Program Files (x86)\Windows Kits\10"
-          /p:TargetPlatformVersion=10.0.19041.0
           /m
 
       - name: Prepare Certificate and Sign .appx
