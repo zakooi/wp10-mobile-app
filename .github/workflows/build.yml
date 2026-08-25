@@ -106,8 +106,12 @@ jobs:
           $deps = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'src\WebSystemUwp\AppPackages') -Recurse -Filter *.appx |
             Where-Object { $_.FullName -like "*Dependencies*" }
           foreach ($d in $deps) {
-            Copy-Item -Path $d.FullName -Destination $outDir -Force
-            Write-Host "Đã copy dependency: $($d.Name)"
+            $depName = $d.Name
+            if ($depName -notmatch "${{ matrix.arch }}") {
+              $depName = $d.BaseName + "_${{ matrix.arch }}.appx"
+            }
+            Copy-Item -Path $d.FullName -Destination (Join-Path $outDir $depName) -Force
+            Write-Host "Đã copy dependency: $depName"
           }
 
       - name: Upload Artifacts
