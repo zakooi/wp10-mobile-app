@@ -8,77 +8,193 @@
 
     <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
         <Grid.RowDefinitions>
+            <!-- Top App Header -->
             <RowDefinition Height="Auto" />
+            <!-- Main Content Pivot -->
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Title -->
-        <StackPanel Grid.Row="0" Margin="16,16,16,8">
-            <TextBlock Text="UWP WEB + SYSTEM"
-                       Style="{StaticResource TitleTextBlockStyle}" />
-            <TextBlock Text="Windows 10 Mobile" />
-        </StackPanel>
+        <!-- Top App Header -->
+        <Border Grid.Row="0" Background="{ThemeResource SystemControlHighlightListAccentLowBrush}" Padding="16,10,16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="WebSystem Explorer" FontWeight="Bold" FontSize="18" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
+                    <TextBlock Text="Windows 10 Mobile Edition" FontSize="11" Opacity="0.7" />
+                </StackPanel>
+                <TextBlock x:Name="HeaderStatusText" Grid.Column="1" VerticalAlignment="Center" FontSize="12" Opacity="0.8" Text="Sẵn sàng" />
+            </Grid>
+        </Border>
 
-        <!-- Pivot -->
-        <Pivot Grid.Row="1" Title="Chức năng">
+        <!-- Main Content Pivot -->
+        <Pivot x:Name="RootPivot" Grid.Row="1">
 
-            <!-- ===================== Tab WEB ===================== -->
-            <PivotItem Header="Web">
-                <ScrollViewer>
-                    <StackPanel Margin="16,8,16,16">
-                        <TextBlock Text="Nhập URL (HTTPS/HTTP)" Margin="0,0,0,4" />
-                        <TextBox x:Name="UrlTextBox"
-                                 Text="https://example.com"
-                                 InputScope="Url"
-                                 TextWrapping="Wrap"
-                                 Margin="0,0,0,8" />
-                        <Button x:Name="FetchButton"
-                                Content="Tải nội dung"
-                                Click="FetchButton_Click"
-                                Margin="0,0,0,8" />
-                        <ProgressRing x:Name="FetchProgress"
-                                      IsActive="False"
-                                      Visibility="Collapsed"
-                                      Margin="0,0,0,8" />
-                        <TextBlock x:Name="WebStatusText"
-                                   TextWrapping="Wrap"
-                                   Foreground="{ThemeResource SystemControlForegroundAccentBrush}"
-                                   Margin="0,0,0,8" />
-                        <TextBlock Text="Nội dung trả về:" Margin="0,8,0,4" />
-                        <TextBox x:Name="WebResultBox"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="320" />
+            <!-- ===================== TAB 1: TRÌNH DUYỆT TRỰC QUAN ===================== -->
+            <PivotItem Header="Trình duyệt">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <!-- Navigation Bar -->
+                        <RowDefinition Height="Auto" />
+                        <!-- Quick Bookmarks -->
+                        <RowDefinition Height="Auto" />
+                        <!-- Loading Progress Bar -->
+                        <RowDefinition Height="Auto" />
+                        <!-- Web View -->
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Navigation Bar -->
+                    <Grid Grid.Row="0" Margin="8,0,8,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Back -->
+                        <Button x:Name="BrowserBackButton" Grid.Column="0" Click="BrowserBackButton_Click" Width="36" Height="36" Padding="0" Margin="0,0,4,0">
+                            <TextBlock Text="&#xE112;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
+                        </Button>
+
+                        <!-- Forward -->
+                        <Button x:Name="BrowserForwardButton" Grid.Column="1" Click="BrowserForwardButton_Click" Width="36" Height="36" Padding="0" Margin="0,0,4,0">
+                            <TextBlock Text="&#xE111;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
+                        </Button>
+
+                        <!-- Refresh -->
+                        <Button x:Name="BrowserRefreshButton" Grid.Column="2" Click="BrowserRefreshButton_Click" Width="36" Height="36" Padding="0" Margin="0,0,4,0">
+                            <TextBlock Text="&#xE149;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
+                        </Button>
+
+                        <!-- Address Bar -->
+                        <TextBox x:Name="BrowserUrlBox" Grid.Column="3" Text="https://www.google.com" InputScope="Url" Margin="0,0,4,0" KeyDown="BrowserUrlBox_KeyDown" />
+
+                        <!-- Go -->
+                        <Button x:Name="BrowserGoButton" Grid.Column="4" Click="BrowserGoButton_Click" Content="Đi" Margin="0,0,4,0" />
+
+                        <!-- Home -->
+                        <Button x:Name="BrowserHomeButton" Grid.Column="5" Click="BrowserHomeButton_Click" Width="36" Height="36" Padding="0">
+                            <TextBlock Text="&#xE10F;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
+                        </Button>
+                    </Grid>
+
+                    <!-- Quick Bookmarks -->
+                    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" Margin="8,0,8,4">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Google" Click="QuickBookmark_Click" Tag="https://www.google.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                            <Button Content="Bing" Click="QuickBookmark_Click" Tag="https://www.bing.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                            <Button Content="Wikipedia" Click="QuickBookmark_Click" Tag="https://vi.m.wikipedia.org" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                            <Button Content="GitHub" Click="QuickBookmark_Click" Tag="https://github.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                            <Button Content="VnExpress" Click="QuickBookmark_Click" Tag="https://vnexpress.net" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                            <Button Content="Dân Trí" Click="QuickBookmark_Click" Tag="https://dantri.com.vn" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                            <Button Content="Báo Mới" Click="QuickBookmark_Click" Tag="https://baomoi.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Loading Progress Bar -->
+                    <ProgressBar x:Name="BrowserProgressBar" Grid.Row="2" IsIndeterminate="False" Visibility="Collapsed" Margin="0,0,0,2" />
+
+                    <!-- WebView Control -->
+                    <Border Grid.Row="3" BorderBrush="{ThemeResource SystemControlHighlightBaseLowBrush}" BorderThickness="1" Margin="8,0,8,8">
+                        <WebView x:Name="BrowserWebView"
+                                 NavigationStarting="BrowserWebView_NavigationStarting"
+                                 ContentLoading="BrowserWebView_ContentLoading"
+                                 DOMContentLoaded="BrowserWebView_DOMContentLoaded"
+                                 NavigationCompleted="BrowserWebView_NavigationCompleted"
+                                 NewWindowRequested="BrowserWebView_NewWindowRequested" />
+                    </Border>
+                </Grid>
+            </PivotItem>
+
+            <!-- ===================== TAB 2: CÔNG CỤ API INSPECTOR ===================== -->
+            <PivotItem Header="API Inspector">
+                <ScrollViewer Padding="16,8,16,16">
+                    <StackPanel>
+                        <!-- Method & URL -->
+                        <TextBlock Text="Đường dẫn API (HTTP/HTTPS):" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="ApiMethodCombo" Grid.Column="0" SelectedIndex="0" Margin="0,0,6,0">
+                                <ComboBoxItem Content="GET" />
+                                <ComboBoxItem Content="POST" />
+                            </ComboBox>
+                            <TextBox x:Name="ApiUrlBox" Grid.Column="1" Text="https://httpbin.org/get" InputScope="Url" Margin="0,0,6,0" />
+                            <Button x:Name="ApiSendButton" Grid.Column="2" Content="Gửi" Click="ApiSendButton_Click" Background="{ThemeResource SystemControlHighlightAccentBrush}" Foreground="White" />
+                        </Grid>
+
+                        <!-- Quick Presets -->
+                        <TextBlock Text="Mẫu API thử nghiệm:" FontSize="11" Opacity="0.7" Margin="0,0,0,4" />
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" Margin="0,0,0,8">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="httpbin /get" Click="ApiPreset_Click" Tag="https://httpbin.org/get" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
+                                <Button Content="GitHub API" Click="ApiPreset_Click" Tag="https://api.github.com" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
+                                <Button Content="IP Info" Click="ApiPreset_Click" Tag="https://api.ipify.org?format=json" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
+                                <Button Content="Thời tiết" Click="ApiPreset_Click" Tag="https://wttr.in/Hanoi?format=j1" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Status Badge -->
+                        <Border x:Name="ApiStatusBadge" Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="4" Padding="12,8,12,8" Margin="0,0,0,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="ApiStatusText" Grid.Column="0" Text="Chưa gửi yêu cầu" VerticalAlignment="Center" FontWeight="SemiBold" />
+                                <TextBlock x:Name="ApiTimeText" Grid.Column="1" Text="" VerticalAlignment="Center" Opacity="0.7" />
+                            </Grid>
+                        </Border>
+
+                        <ProgressRing x:Name="ApiProgressRing" IsActive="False" Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,0,0,8" />
+
+                        <!-- Response Viewer -->
+                        <TextBlock Text="Nội dung phản hồi:" FontWeight="SemiBold" Margin="0,8,0,4" />
+                        <TextBox x:Name="ApiResponseBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="260" FontFamily="Consolas, Courier New" FontSize="12" />
                     </StackPanel>
                 </ScrollViewer>
             </PivotItem>
 
-            <!-- ===================== Tab HỆ THỐNG ===================== -->
+            <!-- ===================== TAB 3: THÔNG TIN HỆ THỐNG ===================== -->
             <PivotItem Header="Hệ thống">
-                <ScrollViewer>
-                    <StackPanel Margin="16,8,16,16">
-                        <TextBlock Text="Thông tin thiết bị (không cần quyền cao)" />
-                        <TextBox x:Name="DeviceInfoBox"
-                                 IsReadOnly="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="140" />
-                        <Button x:Name="LoadDeviceInfoButton"
-                                Content="Đọc thông tin thiết bị"
-                                Click="LoadDeviceInfoButton_Click" />
+                <ScrollViewer Padding="16,8,16,16">
+                    <StackPanel>
+                        <!-- Device Info Card -->
+                        <Border Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="📱 Thông Tin Thiết Bị" FontWeight="Bold" FontSize="15" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
+                                    <Button Content="Làm mới" Click="RefreshSystemInfo_Click" HorizontalAlignment="Right" Padding="8,2,8,2" FontSize="11" />
+                                </Grid>
+                                <TextBox x:Name="SystemDeviceInfoBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" />
+                            </StackPanel>
+                        </Border>
 
-                        <TextBlock Text="Can thiệp hệ thống (registry / FullTrust)" Margin="0,12,0,0" />
-                        <Button x:Name="SystemAccessButton"
-                                Content="Kiểm tra quyền hệ thống"
-                                Click="SystemAccessButton_Click" />
-                        <TextBlock x:Name="SystemStatusText"
-                                   TextWrapping="Wrap"
-                                   Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
-                        <TextBox x:Name="RegistryResultBox"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="180" />
+                        <!-- Battery & Network Card -->
+                        <Border Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="🔋 Pin &amp; Mạng" FontWeight="Bold" FontSize="15" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" Margin="0,0,0,8" />
+                                <TextBox x:Name="SystemBatteryBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Security & Sandbox Card -->
+                        <Border Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="6" Padding="14">
+                            <StackPanel>
+                                <TextBlock Text="🛡️ Kiểm Tra Bảo Mật Sandbox" FontWeight="Bold" FontSize="15" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" Margin="0,0,0,6" />
+                                <Button x:Name="CheckSecurityButton" Content="Kiểm tra quyền truy cập hệ thống" Click="CheckSecurityButton_Click" Margin="0,0,0,8" />
+                                <TextBox x:Name="SystemSecurityBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" Text="Nhấn nút trên để kiểm tra quyền hạn của ứng dụng." />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </PivotItem>
