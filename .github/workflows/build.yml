@@ -102,6 +102,14 @@ jobs:
           Copy-Item -Path $appx -Destination $destAppx -Force
           Write-Host "Đã chuẩn bị xong artifact tại: $destAppx"
 
+          # Copy dependencies nếu có
+          $deps = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'src\WebSystemUwp\AppPackages') -Recurse -Filter *.appx |
+            Where-Object { $_.FullName -like "*Dependencies*" }
+          foreach ($d in $deps) {
+            Copy-Item -Path $d.FullName -Destination $outDir -Force
+            Write-Host "Đã copy dependency: $($d.Name)"
+          }
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
