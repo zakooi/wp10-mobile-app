@@ -93,6 +93,7 @@
     </Compile>
     <Compile Include="Services\WebService.cs" />
     <Compile Include="Services\SystemInterop.cs" />
+    <Compile Include="Services\EngineOptimizer.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

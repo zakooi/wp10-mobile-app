@@ -1,91 +1,231 @@
 using System;
+using System.Collections.ObjectModel;
+using System.Linq;
 using Windows.System;
-using Windows.UI;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Input;
-using Windows.UI.Xaml.Media;
 using WebSystemUwp.Services;
 
 namespace WebSystemUwp
 {
+    public class BrowserTab
+    {
+        public string Id { get; set; }
+        public string Title { get; set; }
+        public string Url { get; set; }
+    }
+
     public sealed partial class MainPage : Page
     {
+        private const string NewTabHomeUrl = "about:home";
         private const string DefaultHomeUrl = "https://www.google.com";
+
+        private ObservableCollection<BrowserTab> _tabs = new ObservableCollection<BrowserTab>();
+        private BrowserTab _activeTab;
+        private UserAgentProfile _currentUa = UserAgentProfile.ChromeMobile;
 
         public MainPage()
         {
             InitializeComponent();
+            TabListView.ItemsSource = _tabs;
             Loaded += MainPage_Loaded;
         }
 
         private void MainPage_Loaded(object sender, RoutedEventArgs e)
         {
-            // Tải thông tin hệ thống ban đầu
-            LoadSystemInformation();
-
-            // Khởi động trình duyệt với trang chủ
-            NavigateBrowser(DefaultHomeUrl);
+            // Mở tab đầu tiên với trang Google
+            CreateNewTab(DefaultHomeUrl);
+            LoadToolsInfo();
         }
 
         // =========================================================================
-        // TAB 1: TRÌNH DUYỆT TRỰC QUAN (IN-APP VISUAL WEB BROWSER)
+        // 1. QUẢN LÝ ĐA TAB (MULTI-TAB BROWSING)
         // =========================================================================
 
-        private void NavigateBrowser(string url)
+        private void CreateNewTab(string url)
         {
-            if (string.IsNullOrWhiteSpace(url))
+            var tab = new BrowserTab
+            {
+                Id = Guid.NewGuid().ToString(),
+                Title = "Tab Mới",
+                Url = string.IsNullOrWhiteSpace(url) ? NewTabHomeUrl : url
+            };
+            _tabs.Add(tab);
+            SwitchToTab(tab);
+        }
+
+        private void SwitchToTab(BrowserTab tab)
+        {
+            if (tab == null) return;
+            _activeTab = tab;
+            UpdateTabCountDisplay();
+
+            if (tab.Url == NewTabHomeUrl)
+            {
+                NewTabHomeView.Visibility = Visibility.Visible;
+                BrowserWebView.Visibility = Visibility.Collapsed;
+                OmniUrlBox.Text = "";
+                OmniLockIcon.Text = "\uE721"; // Search Icon
+            }
+            else
+            {
+                NewTabHomeView.Visibility = Visibility.Collapsed;
+                BrowserWebView.Visibility = Visibility.Visible;
+                NavigateBrowser(tab.Url);
+            }
+
+            TabSwitcherOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void UpdateTabCountDisplay()
+        {
+            OmniTabCountText.Text = _tabs.Count.ToString();
+        }
+
+        private void NewTab_Click(object sender, RoutedEventArgs e)
+        {
+            CreateNewTab(NewTabHomeUrl);
+        }
+
+        private void OmniTabButton_Click(object sender, RoutedEventArgs e)
+        {
+            TabSwitcherOverlay.Visibility = TabSwitcherOverlay.Visibility == Visibility.Visible
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        }
+
+        private void CloseTabSwitcher_Click(object sender, RoutedEventArgs e)
+        {
+            TabSwitcherOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void TabListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (TabListView.SelectedItem is BrowserTab tab)
+            {
+                SwitchToTab(tab);
+            }
+        }
+
+        private void CloseTabButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is string tabId)
+            {
+                var tab = _tabs.FirstOrDefault(t => t.Id == tabId);
+                if (tab != null)
+                {
+                    int index = _tabs.IndexOf(tab);
+                    _tabs.Remove(tab);
+
+                    if (_tabs.Count == 0)
+                    {
+                        CreateNewTab(NewTabHomeUrl);
+                    }
+                    else if (_activeTab == tab)
+                    {
+                        int newIndex = Math.Max(0, index - 1);
+                        SwitchToTab(_tabs[newIndex]);
+                    }
+                    else
+                    {
+                        UpdateTabCountDisplay();
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // 2. CHROME OMNIBOX & ĐIỀU HƯỚNG
+        // =========================================================================
+
+        private void NavigateBrowser(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
                 return;
 
-            url = url.Trim();
-            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            input = input.Trim();
+            string targetUrl = input;
+
+            if (!input.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !input.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                !input.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
             {
-                // Nếu người dùng gõ từ khóa tìm kiếm (chứa dấu cách hoặc không có dấu chấm)
-                if (url.Contains(" ") || !url.Contains("."))
+                if (input.Contains(" ") || !input.Contains("."))
                 {
-                    url = "https://www.google.com/search?q=" + Uri.EscapeDataString(url);
+                    targetUrl = "https://www.google.com/search?q=" + Uri.EscapeDataString(input);
                 }
                 else
                 {
-                    url = "https://" + url;
+                    targetUrl = "https://" + input;
                 }
+            }
+
+            NewTabHomeView.Visibility = Visibility.Collapsed;
+            BrowserWebView.Visibility = Visibility.Visible;
+
+            OmniUrlBox.Text = targetUrl;
+            if (_activeTab != null)
+            {
+                _activeTab.Url = targetUrl;
             }
 
             try
             {
-                BrowserUrlBox.Text = url;
-                BrowserWebView.Navigate(new Uri(url));
+                BrowserWebView.Navigate(new Uri(targetUrl));
             }
             catch (Exception ex)
             {
-                HeaderStatusText.Text = "Lỗi URL: " + ex.Message;
+                System.Diagnostics.Debug.WriteLine("Navigate error: " + ex.Message);
             }
         }
 
-        private void BrowserGoButton_Click(object sender, RoutedEventArgs e)
+        private void OmniGoButton_Click(object sender, RoutedEventArgs e)
         {
-            NavigateBrowser(BrowserUrlBox.Text);
+            NavigateBrowser(OmniUrlBox.Text);
         }
 
-        private void BrowserUrlBox_KeyDown(object sender, KeyRoutedEventArgs e)
+        private void OmniUrlBox_KeyDown(object sender, KeyRoutedEventArgs e)
         {
             if (e.Key == VirtualKey.Enter)
             {
-                NavigateBrowser(BrowserUrlBox.Text);
+                NavigateBrowser(OmniUrlBox.Text);
                 e.Handled = true;
             }
         }
 
-        private void BrowserBackButton_Click(object sender, RoutedEventArgs e)
+        private void HomeSearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
+        {
+            if (e.Key == VirtualKey.Enter)
+            {
+                NavigateBrowser(HomeSearchBox.Text);
+                e.Handled = true;
+            }
+        }
+
+        private void OmniClearButton_Click(object sender, RoutedEventArgs e)
+        {
+            OmniUrlBox.Text = "";
+        }
+
+        private void OmniUrlBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            OmniClearButton.Visibility = string.IsNullOrEmpty(OmniUrlBox.Text) ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void OmniBackButton_Click(object sender, RoutedEventArgs e)
         {
             if (BrowserWebView.CanGoBack)
             {
                 BrowserWebView.GoBack();
             }
+            else
+            {
+                SwitchToTab(_activeTab);
+            }
         }
 
-        private void BrowserForwardButton_Click(object sender, RoutedEventArgs e)
+        private void OmniForwardButton_Click(object sender, RoutedEventArgs e)
         {
             if (BrowserWebView.CanGoForward)
             {
@@ -93,17 +233,21 @@ namespace WebSystemUwp
             }
         }
 
-        private void BrowserRefreshButton_Click(object sender, RoutedEventArgs e)
+        private void OmniRefreshButton_Click(object sender, RoutedEventArgs e)
         {
             BrowserWebView.Refresh();
         }
 
-        private void BrowserHomeButton_Click(object sender, RoutedEventArgs e)
+        private void OmniHomeButton_Click(object sender, RoutedEventArgs e)
         {
-            NavigateBrowser(DefaultHomeUrl);
+            if (_activeTab != null)
+            {
+                _activeTab.Url = NewTabHomeUrl;
+                SwitchToTab(_activeTab);
+            }
         }
 
-        private void QuickBookmark_Click(object sender, RoutedEventArgs e)
+        private void QuickShortcut_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button btn && btn.Tag is string url)
             {
@@ -111,26 +255,62 @@ namespace WebSystemUwp
             }
         }
 
+        // =========================================================================
+        // 3. ENGINE OPTIMIZATION & TIÊM POLYFILLS / ADBLOCK / DARKMODE
+        // =========================================================================
+
         private void BrowserWebView_NavigationStarting(WebView sender, WebViewNavigationStartingEventArgs args)
         {
             BrowserProgressBar.Visibility = Visibility.Visible;
             BrowserProgressBar.IsIndeterminate = true;
-            HeaderStatusText.Text = "Đang kết nối...";
 
             if (args.Uri != null)
             {
-                BrowserUrlBox.Text = args.Uri.ToString();
+                OmniUrlBox.Text = args.Uri.ToString();
+                OmniLockIcon.Text = args.Uri.Scheme == "https" ? "\uE72E" : "\uE7BA"; // Lock vs Warning icon
+                if (_activeTab != null)
+                {
+                    _activeTab.Url = args.Uri.ToString();
+                }
             }
         }
 
         private void BrowserWebView_ContentLoading(WebView sender, WebViewContentLoadingEventArgs args)
         {
-            HeaderStatusText.Text = "Đang tải dữ liệu...";
+            // Bắt đầu tải nội dung
         }
 
-        private void BrowserWebView_DOMContentLoaded(WebView sender, WebViewDOMContentLoadedEventArgs args)
+        private async void BrowserWebView_DOMContentLoaded(WebView sender, WebViewDOMContentLoadedEventArgs args)
         {
-            HeaderStatusText.Text = "Đang hiển thị...";
+            // 1. Tiêm Modern JavaScript Polyfills
+            if (MenuTogglePolyfills.IsChecked)
+            {
+                try
+                {
+                    await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetModernPolyfillsScript() });
+                }
+                catch {}
+            }
+
+            // 2. Tiêm AdBlock & Cookie Blocker
+            if (MenuToggleAdBlock.IsChecked)
+            {
+                try
+                {
+                    await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetContentBlockerScript() });
+                }
+                catch {}
+            }
+
+            // 3. Tiêm AMOLED Dark Mode
+            if (MenuToggleDarkMode.IsChecked)
+            {
+                try
+                {
+                    await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() });
+                }
+                catch {}
+            }
         }
 
         private void BrowserWebView_NavigationCompleted(WebView sender, WebViewNavigationCompletedEventArgs args)
@@ -138,145 +318,109 @@ namespace WebSystemUwp
             BrowserProgressBar.Visibility = Visibility.Collapsed;
             BrowserProgressBar.IsIndeterminate = false;
 
-            BrowserBackButton.IsEnabled = BrowserWebView.CanGoBack;
-            BrowserForwardButton.IsEnabled = BrowserWebView.CanGoForward;
-
-            if (args.IsSuccess)
+            if (_activeTab != null)
             {
-                HeaderStatusText.Text = "Đã tải xong (" + (args.Uri?.Host ?? "Web") + ")";
-                if (args.Uri != null)
+                _activeTab.Title = BrowserWebView.DocumentTitle;
+                if (string.IsNullOrWhiteSpace(_activeTab.Title))
                 {
-                    BrowserUrlBox.Text = args.Uri.ToString();
+                    _activeTab.Title = args.Uri?.Host ?? "Trang web";
                 }
             }
-            else
-            {
-                HeaderStatusText.Text = "Không thể tải: " + args.WebErrorStatus.ToString();
-            }
+
+            OmniBackButton.IsEnabled = BrowserWebView.CanGoBack;
+            BottomBackButton.IsEnabled = BrowserWebView.CanGoBack;
+            BottomForwardButton.IsEnabled = BrowserWebView.CanGoForward;
         }
 
         private void BrowserWebView_NewWindowRequested(WebView sender, WebViewNewWindowRequestedEventArgs args)
         {
-            // Mở liên kết mới ngay trong chính WebView thay vì mở trình duyệt ngoài
             args.Handled = true;
-            sender.Navigate(args.Uri);
+            CreateNewTab(args.Uri.ToString());
         }
 
         // =========================================================================
-        // TAB 2: CÔNG CỤ KIỂM TRA WEB API (HTTP / JSON INSPECTOR)
+        // 4. MENU CHROME & TÙY CHỌN ENGINE
         // =========================================================================
 
-        private async void ApiSendButton_Click(object sender, RoutedEventArgs e)
+        private void MenuToggleAdBlock_Click(object sender, RoutedEventArgs e)
         {
-            string url = ApiUrlBox.Text?.Trim();
-            if (string.IsNullOrEmpty(url))
-            {
-                ApiStatusText.Text = "⚠️ Vui lòng nhập URL hợp lệ.";
-                return;
-            }
+            BrowserWebView.Refresh();
+        }
 
-            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        private void MenuTogglePolyfills_Click(object sender, RoutedEventArgs e)
+        {
+            BrowserWebView.Refresh();
+        }
+
+        private async void MenuToggleDarkMode_Click(object sender, RoutedEventArgs e)
+        {
+            try
             {
-                url = "https://" + url;
-                ApiUrlBox.Text = url;
+                await BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() });
             }
+            catch {}
+        }
+
+        private void MenuToggleDesktop_Click(object sender, RoutedEventArgs e)
+        {
+            _currentUa = MenuToggleDesktop.IsChecked ? UserAgentProfile.ChromeDesktop : UserAgentProfile.ChromeMobile;
+            BrowserWebView.Refresh();
+        }
+
+        private void SetUserAgent_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuFlyoutItem item && item.Tag is string tag)
+            {
+                if (Enum.TryParse<UserAgentProfile>(tag, out var profile))
+                {
+                    _currentUa = profile;
+                    BrowserWebView.Refresh();
+                }
+            }
+        }
+
+        // =========================================================================
+        // 5. CÔNG CỤ TOOLS & SYSTEM INSPECTOR
+        // =========================================================================
+
+        private void OpenToolsDialog_Click(object sender, RoutedEventArgs e)
+        {
+            LoadToolsInfo();
+            ToolsOverlay.Visibility = Visibility.Visible;
+        }
+
+        private void CloseToolsDialog_Click(object sender, RoutedEventArgs e)
+        {
+            ToolsOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void LoadToolsInfo()
+        {
+            try
+            {
+                ToolsDeviceInfoBox.Text = SystemInterop.GetDeviceInfo();
+                ToolsBatteryBox.Text = SystemInterop.GetBatteryAndNetworkInfo();
+            }
+            catch {}
+        }
+
+        private async void ToolsSendApi_Click(object sender, RoutedEventArgs e)
+        {
+            string url = ToolsApiUrlBox.Text?.Trim();
+            if (string.IsNullOrEmpty(url)) return;
 
             string method = "GET";
-            if (ApiMethodCombo.SelectedItem is ComboBoxItem item && item.Content != null)
-            {
+            if (ToolsMethodCombo.SelectedItem is ComboBoxItem item && item.Content != null)
                 method = item.Content.ToString();
-            }
 
-            SetApiBusy(true);
-            ApiStatusText.Text = "Đang gửi yêu cầu " + method + "...";
-            ApiTimeText.Text = "";
-            ApiResponseBox.Text = "";
+            ToolsApiStatusText.Text = "Đang gửi...";
+            ToolsApiResponseBox.Text = "";
 
-            try
-            {
-                var result = await WebService.ExecuteRequestAsync(url, method);
-
-                ApiTimeText.Text = $"{result.ElapsedMilliseconds} ms";
-
-                if (result.IsSuccess)
-                {
-                    ApiStatusBadge.Background = new SolidColorBrush(Color.FromArgb(50, 0, 200, 80));
-                    ApiStatusText.Text = $"✅ Status: {result.StatusCode} {result.StatusText} ({result.ContentLength:N0} bytes)";
-                    ApiResponseBox.Text = result.Body;
-                }
-                else
-                {
-                    ApiStatusBadge.Background = new SolidColorBrush(Color.FromArgb(50, 220, 50, 50));
-                    ApiStatusText.Text = result.StatusCode > 0
-                        ? $"❌ HTTP {result.StatusCode} {result.StatusText}"
-                        : "❌ Lỗi kết nối mạng";
-                    ApiResponseBox.Text = result.ErrorMessage ?? "Không nhận được phản hồi.";
-                }
-            }
-            catch (Exception ex)
-            {
-                ApiStatusBadge.Background = new SolidColorBrush(Color.FromArgb(50, 220, 50, 50));
-                ApiStatusText.Text = "❌ Lỗi ngoại lệ";
-                ApiResponseBox.Text = ex.ToString();
-            }
-            finally
-            {
-                SetApiBusy(false);
-            }
-        }
-
-        private void ApiPreset_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is Button btn && btn.Tag is string url)
-            {
-                ApiUrlBox.Text = url;
-                ApiSendButton_Click(sender, e);
-            }
-        }
-
-        private void SetApiBusy(bool busy)
-        {
-            ApiSendButton.IsEnabled = !busy;
-            ApiProgressRing.IsActive = busy;
-            ApiProgressRing.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        }
-
-        // =========================================================================
-        // TAB 3: THÔNG TIN HỆ THỐNG (SYSTEM & BATTERY INFO)
-        // =========================================================================
-
-        private void LoadSystemInformation()
-        {
-            try
-            {
-                SystemDeviceInfoBox.Text = SystemInterop.GetDeviceInfo();
-                SystemBatteryBox.Text = SystemInterop.GetBatteryAndNetworkInfo();
-            }
-            catch (Exception ex)
-            {
-                SystemDeviceInfoBox.Text = "Lỗi: " + ex.Message;
-            }
-        }
-
-        private void RefreshSystemInfo_Click(object sender, RoutedEventArgs e)
-        {
-            LoadSystemInformation();
-        }
-
-        private async void CheckSecurityButton_Click(object sender, RoutedEventArgs e)
-        {
-            CheckSecurityButton.IsEnabled = false;
-            SystemSecurityBox.Text = "Đang kiểm tra bảo mật Sandbox...";
-            try
-            {
-                string res = await SystemInterop.TryCheckSystemAccessAsync();
-                SystemSecurityBox.Text = res;
-            }
-            finally
-            {
-                CheckSecurityButton.IsEnabled = true;
-            }
+            var res = await WebService.ExecuteRequestAsync(url, method);
+            ToolsApiStatusText.Text = res.IsSuccess
+                ? $"✅ {res.StatusCode} {res.StatusText} ({res.ElapsedMilliseconds} ms)"
+                : $"❌ Lỗi: {res.StatusCode} {res.StatusText}";
+            ToolsApiResponseBox.Text = res.Body ?? res.ErrorMessage;
         }
     }
 }

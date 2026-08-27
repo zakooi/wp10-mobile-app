@@ -6,200 +6,345 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+    <Grid Background="#121212">
         <Grid.RowDefinitions>
-            <!-- Top App Header -->
+            <!-- Top Chrome Toolbar / Omnibox -->
             <RowDefinition Height="Auto" />
-            <!-- Main Content Pivot -->
+            <!-- Loading Progress Bar -->
+            <RowDefinition Height="Auto" />
+            <!-- Browser Viewport / New Tab / Tab Switcher -->
             <RowDefinition Height="*" />
+            <!-- Bottom Navigation Bar -->
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Top App Header -->
-        <Border Grid.Row="0" Background="{ThemeResource SystemControlHighlightListAccentLowBrush}" Padding="16,10,16,10">
+        <!-- ==================== 1. CHROME OMNIBOX TOOLBAR ==================== -->
+        <Border Grid.Row="0" Background="#1F1F1F" Padding="8,8,8,8" BorderBrush="#333333" BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <!-- Back Button -->
+                    <ColumnDefinition Width="Auto" />
+                    <!-- Omnibox Address Pill -->
                     <ColumnDefinition Width="*" />
+                    <!-- Tab Switcher Button [ 1 ] -->
+                    <ColumnDefinition Width="Auto" />
+                    <!-- Chrome Menu Button [ ⋮ ] -->
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="WebSystem Explorer" FontWeight="Bold" FontSize="18" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
-                    <TextBlock Text="Windows 10 Mobile Edition" FontSize="11" Opacity="0.7" />
-                </StackPanel>
-                <TextBlock x:Name="HeaderStatusText" Grid.Column="1" VerticalAlignment="Center" FontSize="12" Opacity="0.8" Text="Sẵn sàng" />
-            </Grid>
-        </Border>
 
-        <!-- Main Content Pivot -->
-        <Pivot x:Name="RootPivot" Grid.Row="1">
+                <!-- Back Button -->
+                <Button x:Name="OmniBackButton" Grid.Column="0" Click="OmniBackButton_Click" Width="36" Height="36" Padding="0" Background="Transparent" BorderThickness="0" Margin="0,0,4,0">
+                    <TextBlock Text="&#xE112;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#E0E0E0" />
+                </Button>
 
-            <!-- ===================== TAB 1: TRÌNH DUYỆT TRỰC QUAN ===================== -->
-            <PivotItem Header="Trình duyệt">
-                <Grid Margin="0,4,0,0">
-                    <Grid.RowDefinitions>
-                        <!-- Navigation Bar -->
-                        <RowDefinition Height="Auto" />
-                        <!-- Quick Bookmarks -->
-                        <RowDefinition Height="Auto" />
-                        <!-- Loading Progress Bar -->
-                        <RowDefinition Height="Auto" />
-                        <!-- Web View -->
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <!-- Navigation Bar -->
-                    <Grid Grid.Row="0" Margin="8,0,8,6">
+                <!-- Chrome Omnibox (Rounded Pill Shape) -->
+                <Border Grid.Column="1" Background="#2C2C2C" CornerRadius="18" Padding="10,0,6,0" Margin="0,0,6,0">
+                    <Grid VerticalAlignment="Center">
                         <Grid.ColumnDefinitions>
+                            <!-- Security Padlock / Globe Icon -->
                             <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
+                            <!-- Address Input Box -->
                             <ColumnDefinition Width="*" />
+                            <!-- Clear / Reload Button -->
                             <ColumnDefinition Width="Auto" />
+                            <!-- Go Action Button -->
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <!-- Back -->
-                        <Button x:Name="BrowserBackButton" Grid.Column="0" Click="BrowserBackButton_Click" Width="36" Height="36" Padding="0" Margin="0,0,4,0">
-                            <TextBlock Text="&#xE112;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
+                        <!-- Lock Icon 🔒 -->
+                        <TextBlock x:Name="OmniLockIcon" Grid.Column="0" Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#8AB4F8" VerticalAlignment="Center" Margin="0,0,6,0" />
+
+                        <!-- Address Input Box -->
+                        <TextBox x:Name="OmniUrlBox" Grid.Column="1" Text="https://www.google.com" InputScope="Url" Background="Transparent" BorderThickness="0" Foreground="#FFFFFF" FontSize="14" Padding="0,4,0,4" KeyDown="OmniUrlBox_KeyDown" TextChanged="OmniUrlBox_TextChanged" />
+
+                        <!-- Clear Button ✕ -->
+                        <Button x:Name="OmniClearButton" Grid.Column="2" Click="OmniClearButton_Click" Width="28" Height="28" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed">
+                            <TextBlock Text="&#xE10A;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#9E9E9E" />
                         </Button>
 
-                        <!-- Forward -->
-                        <Button x:Name="BrowserForwardButton" Grid.Column="1" Click="BrowserForwardButton_Click" Width="36" Height="36" Padding="0" Margin="0,0,4,0">
-                            <TextBlock Text="&#xE111;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
-                        </Button>
-
-                        <!-- Refresh -->
-                        <Button x:Name="BrowserRefreshButton" Grid.Column="2" Click="BrowserRefreshButton_Click" Width="36" Height="36" Padding="0" Margin="0,0,4,0">
-                            <TextBlock Text="&#xE149;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
-                        </Button>
-
-                        <!-- Address Bar -->
-                        <TextBox x:Name="BrowserUrlBox" Grid.Column="3" Text="https://www.google.com" InputScope="Url" Margin="0,0,4,0" KeyDown="BrowserUrlBox_KeyDown" />
-
-                        <!-- Go -->
-                        <Button x:Name="BrowserGoButton" Grid.Column="4" Click="BrowserGoButton_Click" Content="Đi" Margin="0,0,4,0" />
-
-                        <!-- Home -->
-                        <Button x:Name="BrowserHomeButton" Grid.Column="5" Click="BrowserHomeButton_Click" Width="36" Height="36" Padding="0">
-                            <TextBlock Text="&#xE10F;" FontFamily="Segoe MDL2 Assets" FontSize="14" />
+                        <!-- Go Action Button ➔ -->
+                        <Button x:Name="OmniGoButton" Grid.Column="3" Click="OmniGoButton_Click" Width="28" Height="28" Padding="0" Background="Transparent" BorderThickness="0">
+                            <TextBlock Text="&#xE111;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#8AB4F8" />
                         </Button>
                     </Grid>
+                </Border>
 
-                    <!-- Quick Bookmarks -->
-                    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" Margin="8,0,8,4">
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="Google" Click="QuickBookmark_Click" Tag="https://www.google.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                            <Button Content="Bing" Click="QuickBookmark_Click" Tag="https://www.bing.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                            <Button Content="Wikipedia" Click="QuickBookmark_Click" Tag="https://vi.m.wikipedia.org" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                            <Button Content="GitHub" Click="QuickBookmark_Click" Tag="https://github.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                            <Button Content="VnExpress" Click="QuickBookmark_Click" Tag="https://vnexpress.net" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                            <Button Content="Dân Trí" Click="QuickBookmark_Click" Tag="https://dantri.com.vn" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                            <Button Content="Báo Mới" Click="QuickBookmark_Click" Tag="https://baomoi.com" Margin="0,0,6,0" Padding="8,4,8,4" FontSize="12" />
-                        </StackPanel>
-                    </ScrollViewer>
-
-                    <!-- Loading Progress Bar -->
-                    <ProgressBar x:Name="BrowserProgressBar" Grid.Row="2" IsIndeterminate="False" Visibility="Collapsed" Margin="0,0,0,2" />
-
-                    <!-- WebView Control -->
-                    <Border Grid.Row="3" BorderBrush="{ThemeResource SystemControlHighlightBaseLowBrush}" BorderThickness="1" Margin="8,0,8,8">
-                        <WebView x:Name="BrowserWebView"
-                                 NavigationStarting="BrowserWebView_NavigationStarting"
-                                 ContentLoading="BrowserWebView_ContentLoading"
-                                 DOMContentLoaded="BrowserWebView_DOMContentLoaded"
-                                 NavigationCompleted="BrowserWebView_NavigationCompleted"
-                                 NewWindowRequested="BrowserWebView_NewWindowRequested" />
+                <!-- Tab Switcher Button [ 1 ] -->
+                <Button x:Name="OmniTabButton" Grid.Column="2" Click="OmniTabButton_Click" Width="36" Height="36" Padding="0" Background="Transparent" BorderThickness="0" Margin="0,0,2,0">
+                    <Border BorderBrush="#E0E0E0" BorderThickness="2" CornerRadius="4" Width="22" Height="22">
+                        <TextBlock x:Name="OmniTabCountText" Text="1" FontSize="11" FontWeight="Bold" Foreground="#E0E0E0" HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
-                </Grid>
-            </PivotItem>
+                </Button>
 
-            <!-- ===================== TAB 2: CÔNG CỤ API INSPECTOR ===================== -->
-            <PivotItem Header="API Inspector">
-                <ScrollViewer Padding="16,8,16,16">
-                    <StackPanel>
-                        <!-- Method & URL -->
-                        <TextBlock Text="Đường dẫn API (HTTP/HTTPS):" FontWeight="SemiBold" Margin="0,0,0,4" />
-                        <Grid Margin="0,0,0,8">
+                <!-- Chrome Menu Button [ ⋮ ] -->
+                <Button x:Name="OmniMenuButton" Grid.Column="3" Width="36" Height="36" Padding="0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE10C;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#E0E0E0" />
+                    <Button.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="➕ Tab Mới" Click="NewTab_Click" />
+                            <MenuFlyoutSeparator />
+                            <ToggleMenuFlyoutItem x:Name="MenuToggleAdBlock" Text="🛡️ Chặn quảng cáo (Turbo)" IsChecked="true" Click="MenuToggleAdBlock_Click" />
+                            <ToggleMenuFlyoutItem x:Name="MenuTogglePolyfills" Text="💉 Tiêm JS Polyfills ES6+" IsChecked="true" Click="MenuTogglePolyfills_Click" />
+                            <ToggleMenuFlyoutItem x:Name="MenuToggleDarkMode" Text="🌙 Chế độ Nền tối (Dark)" IsChecked="false" Click="MenuToggleDarkMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="MenuToggleDesktop" Text="🖥️ Trang web cho máy tính" IsChecked="false" Click="MenuToggleDesktop_Click" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutSubItem Text="🎭 Đổi User-Agent">
+                                <MenuFlyoutItem Text="Chrome Mobile (Mặc định)" Click="SetUserAgent_Click" Tag="ChromeMobile" />
+                                <MenuFlyoutItem Text="Firefox Mobile 128" Click="SetUserAgent_Click" Tag="FirefoxMobile" />
+                                <MenuFlyoutItem Text="Safari iOS 17" Click="SetUserAgent_Click" Tag="SafariIos" />
+                                <MenuFlyoutItem Text="Chrome Desktop" Click="SetUserAgent_Click" Tag="ChromeDesktop" />
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="⚡ Công Cụ API &amp; Hệ Thống" Click="OpenToolsDialog_Click" />
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- ==================== 2. LOADING PROGRESS BAR ==================== -->
+        <ProgressBar x:Name="BrowserProgressBar" Grid.Row="1" Height="3" Foreground="#8AB4F8" Background="Transparent" IsIndeterminate="False" Visibility="Collapsed" />
+
+        <!-- ==================== 3. MAIN VIEWPORT & NEW TAB GRID ==================== -->
+        <Grid Grid.Row="2">
+
+            <!-- New Tab Home View (Chrome Style Top Sites) -->
+            <ScrollViewer x:Name="NewTabHomeView" Padding="20,16,20,16" Visibility="Collapsed">
+                <StackPanel HorizontalAlignment="Center" MaxWidth="480">
+                    <!-- Google Logo -->
+                    <StackPanel Margin="0,16,0,24" HorizontalAlignment="Center">
+                        <TextBlock Text="Google" FontWeight="Bold" FontSize="36" Foreground="#E0E0E0" HorizontalAlignment="Center" />
+                        <TextBlock Text="Chrome Mobile Edition" FontSize="11" Foreground="#8AB4F8" HorizontalAlignment="Center" Margin="0,2,0,0" />
+                    </StackPanel>
+
+                    <!-- Center Search Box -->
+                    <Border Background="#2C2C2C" CornerRadius="22" Padding="14,10,14,10" Margin="0,0,0,24">
+                        <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <ComboBox x:Name="ApiMethodCombo" Grid.Column="0" SelectedIndex="0" Margin="0,0,6,0">
-                                <ComboBoxItem Content="GET" />
-                                <ComboBoxItem Content="POST" />
-                            </ComboBox>
-                            <TextBox x:Name="ApiUrlBox" Grid.Column="1" Text="https://httpbin.org/get" InputScope="Url" Margin="0,0,6,0" />
-                            <Button x:Name="ApiSendButton" Grid.Column="2" Content="Gửi" Click="ApiSendButton_Click" Background="{ThemeResource SystemControlHighlightAccentBrush}" Foreground="White" />
+                            <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="#9E9E9E" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <TextBox x:Name="HomeSearchBox" Grid.Column="1" Background="Transparent" BorderThickness="0" Foreground="#FFFFFF" FontSize="14" PlaceholderText="Tìm kiếm trên Google hoặc nhập URL" KeyDown="HomeSearchBox_KeyDown" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Top Sites Shortcuts Grid -->
+                    <TextBlock Text="TRUY CẬP NHANH" FontSize="11" FontWeight="Bold" Foreground="#9E9E9E" Margin="4,0,0,12" />
+                    <VariableSizedWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="4" ItemWidth="96" ItemHeight="96" HorizontalAlignment="Center">
+                        <!-- Google -->
+                        <Button Click="QuickShortcut_Click" Tag="https://www.google.com" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#EA4335" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="G" FontSize="20" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Google" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- YouTube -->
+                        <Button Click="QuickShortcut_Click" Tag="https://m.youtube.com" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#CC0000" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="▶" FontSize="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="YouTube" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Wikipedia -->
+                        <Button Click="QuickShortcut_Click" Tag="https://vi.m.wikipedia.org" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#333333" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="W" FontSize="19" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Wikipedia" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- GitHub -->
+                        <Button Click="QuickShortcut_Click" Tag="https://github.com" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#24292E" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="🐙" FontSize="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="GitHub" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- VnExpress -->
+                        <Button Click="QuickShortcut_Click" Tag="https://vnexpress.net" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#990000" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="V" FontSize="19" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="VnExpress" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Dân Trí -->
+                        <Button Click="QuickShortcut_Click" Tag="https://dantri.com.vn" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#007A3D" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="D" FontSize="19" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Dân Trí" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Báo Mới -->
+                        <Button Click="QuickShortcut_Click" Tag="https://baomoi.com" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#0080FF" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="B" FontSize="19" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Báo Mới" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Bing -->
+                        <Button Click="QuickShortcut_Click" Tag="https://www.bing.com" Background="Transparent" BorderThickness="0" Width="88" Height="88">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Border Background="#008373" CornerRadius="22" Width="44" Height="44" HorizontalAlignment="Center">
+                                    <TextBlock Text="b" FontSize="20" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <TextBlock Text="Bing" FontSize="11" Foreground="#E0E0E0" HorizontalAlignment="Center" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Button>
+                    </VariableSizedWrapGrid>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Real WebView Browser Control -->
+            <WebView x:Name="BrowserWebView"
+                     NavigationStarting="BrowserWebView_NavigationStarting"
+                     ContentLoading="BrowserWebView_ContentLoading"
+                     DOMContentLoaded="BrowserWebView_DOMContentLoaded"
+                     NavigationCompleted="BrowserWebView_NavigationCompleted"
+                     NewWindowRequested="BrowserWebView_NewWindowRequested" />
+
+            <!-- Tab Switcher Overlay (Chrome Tab Grid) -->
+            <Grid x:Name="TabSwitcherOverlay" Background="#181818" Visibility="Collapsed" Padding="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,0,16">
+                    <TextBlock Text="Các Tab Đang Mở" FontSize="18" FontWeight="Bold" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="➕ Tab Mới" Click="NewTab_Click" Background="#8AB4F8" Foreground="#121212" FontWeight="Bold" Margin="0,0,8,0" />
+                        <Button Content="Đóng" Click="CloseTabSwitcher_Click" Background="#333333" Foreground="#FFFFFF" />
+                    </StackPanel>
+                </Grid>
+
+                <ListView x:Name="TabListView" Grid.Row="1" SelectionChanged="TabListView_SelectionChanged">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#252525" CornerRadius="8" Margin="0,0,0,10" Padding="14,10,14,10" BorderBrush="#383838" BorderThickness="1">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Url}" FontSize="11" Foreground="#9E9E9E" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Click="CloseTabButton_Click" Tag="{Binding Id}" Width="32" Height="32" Padding="0" Background="Transparent" BorderThickness="0">
+                                        <TextBlock Text="&#xE10A;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#9E9E9E" />
+                                    </Button>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+
+            <!-- Tools & System Inspector Dialog (Overlay) -->
+            <Grid x:Name="ToolsOverlay" Background="#E6000000" Visibility="Collapsed" Padding="16">
+                <Border Background="#1E1E1E" CornerRadius="8" Padding="16" BorderBrush="#383838" BorderThickness="1" MaxWidth="500">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <TextBlock Text="⚡ Công Cụ &amp; Hệ Thống" FontWeight="Bold" FontSize="16" Foreground="#8AB4F8" VerticalAlignment="Center" />
+                            <Button Content="✕" Click="CloseToolsDialog_Click" HorizontalAlignment="Right" Width="32" Height="32" Padding="0" Background="Transparent" BorderThickness="0" Foreground="#E0E0E0" FontSize="14" />
                         </Grid>
 
-                        <!-- Quick Presets -->
-                        <TextBlock Text="Mẫu API thử nghiệm:" FontSize="11" Opacity="0.7" Margin="0,0,0,4" />
-                        <ScrollViewer HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" Margin="0,0,0,8">
-                            <StackPanel Orientation="Horizontal">
-                                <Button Content="httpbin /get" Click="ApiPreset_Click" Tag="https://httpbin.org/get" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
-                                <Button Content="GitHub API" Click="ApiPreset_Click" Tag="https://api.github.com" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
-                                <Button Content="IP Info" Click="ApiPreset_Click" Tag="https://api.ipify.org?format=json" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
-                                <Button Content="Thời tiết" Click="ApiPreset_Click" Tag="https://wttr.in/Hanoi?format=j1" Margin="0,0,6,0" FontSize="11" Padding="6,3,6,3" />
-                            </StackPanel>
-                        </ScrollViewer>
+                        <Pivot Grid.Row="1">
+                            <!-- Sub Tab: API Inspector -->
+                            <PivotItem Header="API Inspector">
+                                <ScrollViewer Padding="4,8,4,4">
+                                    <StackPanel>
+                                        <TextBlock Text="URL API:" FontSize="12" Foreground="#9E9E9E" Margin="0,0,0,4" />
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="ToolsMethodCombo" Grid.Column="0" SelectedIndex="0" Margin="0,0,6,0">
+                                                <ComboBoxItem Content="GET" />
+                                                <ComboBoxItem Content="POST" />
+                                            </ComboBox>
+                                            <TextBox x:Name="ToolsApiUrlBox" Grid.Column="1" Text="https://httpbin.org/get" Margin="0,0,6,0" />
+                                            <Button Content="Gửi" Click="ToolsSendApi_Click" Background="#8AB4F8" Foreground="#121212" FontWeight="Bold" />
+                                        </Grid>
+                                        <TextBlock x:Name="ToolsApiStatusText" Text="" FontWeight="SemiBold" Foreground="#8AB4F8" Margin="0,0,0,4" />
+                                        <TextBox x:Name="ToolsApiResponseBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="160" MaxHeight="220" FontFamily="Consolas, Courier New" FontSize="11" />
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </PivotItem>
 
-                        <!-- Status Badge -->
-                        <Border x:Name="ApiStatusBadge" Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="4" Padding="12,8,12,8" Margin="0,0,0,8">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock x:Name="ApiStatusText" Grid.Column="0" Text="Chưa gửi yêu cầu" VerticalAlignment="Center" FontWeight="SemiBold" />
-                                <TextBlock x:Name="ApiTimeText" Grid.Column="1" Text="" VerticalAlignment="Center" Opacity="0.7" />
-                            </Grid>
-                        </Border>
+                            <!-- Sub Tab: System Info -->
+                            <PivotItem Header="Hệ thống">
+                                <ScrollViewer Padding="4,8,4,4">
+                                    <StackPanel>
+                                        <TextBox x:Name="ToolsDeviceInfoBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" FontSize="12" Margin="0,0,0,10" />
+                                        <TextBox x:Name="ToolsBatteryBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" FontSize="12" />
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </PivotItem>
+                        </Pivot>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
 
-                        <ProgressRing x:Name="ApiProgressRing" IsActive="False" Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,0,0,8" />
+        <!-- ==================== 4. BOTTOM CHROME NAVIGATION BAR ==================== -->
+        <Border Grid.Row="3" Background="#1F1F1F" Padding="12,6,12,6" BorderBrush="#333333" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
 
-                        <!-- Response Viewer -->
-                        <TextBlock Text="Nội dung phản hồi:" FontWeight="SemiBold" Margin="0,8,0,4" />
-                        <TextBox x:Name="ApiResponseBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="260" FontFamily="Consolas, Courier New" FontSize="12" />
-                    </StackPanel>
-                </ScrollViewer>
-            </PivotItem>
+                <!-- Back -->
+                <Button x:Name="BottomBackButton" Grid.Column="0" Click="OmniBackButton_Click" HorizontalAlignment="Center" Width="44" Height="36" Padding="0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE112;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#E0E0E0" />
+                </Button>
 
-            <!-- ===================== TAB 3: THÔNG TIN HỆ THỐNG ===================== -->
-            <PivotItem Header="Hệ thống">
-                <ScrollViewer Padding="16,8,16,16">
-                    <StackPanel>
-                        <!-- Device Info Card -->
-                        <Border Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="6" Padding="14" Margin="0,0,0,12">
-                            <StackPanel>
-                                <Grid Margin="0,0,0,8">
-                                    <TextBlock Text="📱 Thông Tin Thiết Bị" FontWeight="Bold" FontSize="15" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
-                                    <Button Content="Làm mới" Click="RefreshSystemInfo_Click" HorizontalAlignment="Right" Padding="8,2,8,2" FontSize="11" />
-                                </Grid>
-                                <TextBox x:Name="SystemDeviceInfoBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" />
-                            </StackPanel>
-                        </Border>
+                <!-- Forward -->
+                <Button x:Name="BottomForwardButton" Grid.Column="1" Click="OmniForwardButton_Click" HorizontalAlignment="Center" Width="44" Height="36" Padding="0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE111;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#E0E0E0" />
+                </Button>
 
-                        <!-- Battery & Network Card -->
-                        <Border Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="6" Padding="14" Margin="0,0,0,12">
-                            <StackPanel>
-                                <TextBlock Text="🔋 Pin &amp; Mạng" FontWeight="Bold" FontSize="15" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" Margin="0,0,0,8" />
-                                <TextBox x:Name="SystemBatteryBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" />
-                            </StackPanel>
-                        </Border>
+                <!-- Home -->
+                <Button x:Name="BottomHomeButton" Grid.Column="2" Click="OmniHomeButton_Click" HorizontalAlignment="Center" Width="44" Height="36" Padding="0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE10F;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#E0E0E0" />
+                </Button>
 
-                        <!-- Security & Sandbox Card -->
-                        <Border Background="{ThemeResource SystemControlHighlightBaseLowBrush}" CornerRadius="6" Padding="14">
-                            <StackPanel>
-                                <TextBlock Text="🛡️ Kiểm Tra Bảo Mật Sandbox" FontWeight="Bold" FontSize="15" Foreground="{ThemeResource SystemControlForegroundAccentBrush}" Margin="0,0,0,6" />
-                                <Button x:Name="CheckSecurityButton" Content="Kiểm tra quyền truy cập hệ thống" Click="CheckSecurityButton_Click" Margin="0,0,0,8" />
-                                <TextBox x:Name="SystemSecurityBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" Text="Nhấn nút trên để kiểm tra quyền hạn của ứng dụng." />
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </ScrollViewer>
-            </PivotItem>
-
-        </Pivot>
+                <!-- Refresh -->
+                <Button x:Name="BottomRefreshButton" Grid.Column="3" Click="OmniRefreshButton_Click" HorizontalAlignment="Center" Width="44" Height="36" Padding="0" Background="Transparent" BorderThickness="0">
+                    <TextBlock Text="&#xE149;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#E0E0E0" />
+                </Button>
+            </Grid>
+        </Border>
     </Grid>
-
 </Page>
