@@ -96,6 +96,11 @@
     <Compile Include="Services\EngineOptimizer.cs" />
     <Compile Include="Services\BookmarkService.cs" />
     <Compile Include="Services\HistoryService.cs" />
+    <Compile Include="Services\NetworkService.cs" />
+    <Compile Include="Services\CacheService.cs" />
+    <Compile Include="Services\DeviceService.cs" />
+    <Compile Include="Services\DiagnosticsService.cs" />
+    <Compile Include="Services\SettingsService.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

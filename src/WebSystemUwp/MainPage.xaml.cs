@@ -27,31 +27,73 @@ namespace WebSystemUwp
         private ObservableCollection<BrowserTab> _tabs = new ObservableCollection<BrowserTab>();
         private ObservableCollection<BookmarkItem> _bookmarks;
         private ObservableCollection<HistoryItem> _history;
+        private ObservableCollection<OfflinePageItem> _offlinePages;
         private BrowserTab _activeTab;
         private UserAgentProfile _currentUa = UserAgentProfile.ChromeMobile;
         private int _findActiveIndex = 0;
         private int _currentZoom = 100;
+
+        private DispatcherTimer _autoHideNavTimer;
 
         public MainPage()
         {
             InitializeComponent();
             TabListView.ItemsSource = _tabs;
             Loaded += MainPage_Loaded;
+
+            // Timer tự động ẩn thanh điều hướng dưới để tối ưu màn hình Lumia
+            _autoHideNavTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(3)
+            };
+            _autoHideNavTimer.Tick += AutoHideNavTimer_Tick;
         }
 
-        private void MainPage_Loaded(object sender, RoutedEventArgs e)
+        private async void MainPage_Loaded(object sender, RoutedEventArgs e)
         {
-            // Nạp Bookmarks & Lịch sử
+            // 1. Nạp Bookmarks & Lịch sử & Offline Pages
             _bookmarks = BookmarkService.LoadBookmarks();
             _history = HistoryService.LoadHistory();
+            _offlinePages = await CacheService.LoadOfflinePagesAsync();
 
             BookmarksListView.ItemsSource = _bookmarks;
             HomeBookmarksListView.ItemsSource = _bookmarks;
             HistoryListView.ItemsSource = _history;
+            OfflinePagesListView.ItemsSource = _offlinePages;
 
-            // Mở tab đầu tiên
+            // 2. Đồng bộ Settings
+            ApplySettingsToUI();
+
+            // 3. Mở tab đầu tiên
             CreateNewTab(DefaultHomeUrl);
             LoadToolsInfo();
+        }
+
+        private void ApplySettingsToUI()
+        {
+            try
+            {
+                MenuToggleAdBlock.IsChecked = SettingsService.AutoBlockAds;
+                MenuToggleImgBlock.IsChecked = SettingsService.AutoBlockImages;
+                MenuTogglePolyfills.IsChecked = SettingsService.AutoInjectPolyfills;
+                MenuToggleDarkMode.IsChecked = SettingsService.DarkModeDefault;
+
+                SettingsAutoHideToggle.IsOn = SettingsService.AutoHideBottomBar;
+                SettingsAdBlockToggle.IsOn = SettingsService.AutoBlockAds;
+                SettingsPolyfillsToggle.IsOn = SettingsService.AutoInjectPolyfills;
+                SettingsDarkModeToggle.IsOn = SettingsService.DarkModeDefault;
+
+                for (int i = 0; i < SettingsSearchCombo.Items.Count; i++)
+                {
+                    if (SettingsSearchCombo.Items[i] is ComboBoxItem item &&
+                        item.Content?.ToString() == SettingsService.SearchEngine)
+                    {
+                        SettingsSearchCombo.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            catch {}
         }
 
         // =========================================================================
@@ -83,6 +125,7 @@ namespace WebSystemUwp
                 OmniUrlBox.Text = "";
                 OmniLockIcon.Text = "\uE721"; // Search Icon
                 UpdateBookmarkStarStatus("");
+                ShowBottomNavBar();
             }
             else
             {
@@ -94,6 +137,8 @@ namespace WebSystemUwp
             TabSwitcherOverlay.Visibility = Visibility.Collapsed;
             BookmarksOverlay.Visibility = Visibility.Collapsed;
             HistoryOverlay.Visibility = Visibility.Collapsed;
+            OfflineOverlay.Visibility = Visibility.Collapsed;
+            SettingsOverlay.Visibility = Visibility.Collapsed;
         }
 
         private void UpdateTabCountDisplay()
@@ -171,7 +216,7 @@ namespace WebSystemUwp
             {
                 if (input.Contains(" ") || !input.Contains("."))
                 {
-                    targetUrl = "https://www.google.com/search?q=" + Uri.EscapeDataString(input);
+                    targetUrl = SettingsService.GetSearchUrl(input);
                 }
                 else
                 {
@@ -181,6 +226,7 @@ namespace WebSystemUwp
 
             NewTabHomeView.Visibility = Visibility.Collapsed;
             BrowserWebView.Visibility = Visibility.Visible;
+            ShowBottomNavBar();
 
             OmniUrlBox.Text = targetUrl;
             if (_activeTab != null)
@@ -236,12 +282,34 @@ namespace WebSystemUwp
         private void OmniUrlBox_GotFocus(object sender, RoutedEventArgs e)
         {
             OmniboxBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 138, 180, 248)); // #8AB4F8
+            if (_activeTab != null && !string.IsNullOrEmpty(_activeTab.Url) && _activeTab.Url != NewTabHomeUrl)
+            {
+                OmniUrlBox.Text = _activeTab.Url;
+            }
             OmniUrlBox.SelectAll();
+            ShowBottomNavBar();
         }
 
         private void OmniUrlBox_LostFocus(object sender, RoutedEventArgs e)
         {
-            OmniboxBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 60, 60, 60));
+            OmniboxBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 58, 58, 58));
+            UpdateOmniboxDisplay();
+        }
+
+        private void UpdateOmniboxDisplay()
+        {
+            if (_activeTab == null || string.IsNullOrEmpty(_activeTab.Url) || _activeTab.Url == NewTabHomeUrl)
+                return;
+
+            try
+            {
+                var uri = new Uri(_activeTab.Url);
+                OmniUrlBox.Text = uri.Host.Replace("www.", "");
+            }
+            catch
+            {
+                OmniUrlBox.Text = _activeTab.Url;
+            }
         }
 
         private void OmniBackButton_Click(object sender, RoutedEventArgs e)
@@ -254,6 +322,7 @@ namespace WebSystemUwp
             {
                 SwitchToTab(_activeTab);
             }
+            ShowBottomNavBar();
         }
 
         private void OmniForwardButton_Click(object sender, RoutedEventArgs e)
@@ -262,11 +331,13 @@ namespace WebSystemUwp
             {
                 BrowserWebView.GoForward();
             }
+            ShowBottomNavBar();
         }
 
         private void OmniRefreshButton_Click(object sender, RoutedEventArgs e)
         {
             BrowserWebView.Refresh();
+            ShowBottomNavBar();
         }
 
         private void OmniHomeButton_Click(object sender, RoutedEventArgs e)
@@ -287,7 +358,48 @@ namespace WebSystemUwp
         }
 
         // =========================================================================
-        // 3. BOOKMARKS & LỊCH SỬ (HISTORY)
+        // 3. AUTO-HIDE BOTTOM NAVIGATION BAR (LUMIA 920 OPTIMIZATION)
+        // =========================================================================
+
+        private void ShowBottomNavBar()
+        {
+            BottomNavBar.Visibility = Visibility.Visible;
+            FloatingRevealNavButton.Visibility = Visibility.Collapsed;
+            _autoHideNavTimer.Stop();
+
+            if (SettingsService.AutoHideBottomBar && BrowserWebView.Visibility == Visibility.Visible)
+            {
+                _autoHideNavTimer.Start();
+            }
+        }
+
+        private void HideBottomNavBar()
+        {
+            if (SettingsService.AutoHideBottomBar && BrowserWebView.Visibility == Visibility.Visible)
+            {
+                BottomNavBar.Visibility = Visibility.Collapsed;
+                FloatingRevealNavButton.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void AutoHideNavTimer_Tick(object sender, object e)
+        {
+            _autoHideNavTimer.Stop();
+            HideBottomNavBar();
+        }
+
+        private void FloatingRevealNavButton_Click(object sender, RoutedEventArgs e)
+        {
+            ShowBottomNavBar();
+        }
+
+        private void BrowserWebView_Tapped(object sender, TappedRoutedEventArgs e)
+        {
+            ShowBottomNavBar();
+        }
+
+        // =========================================================================
+        // 4. BOOKMARKS & LỊCH SỬ & OFFLINE PAGES
         // =========================================================================
 
         private void UpdateBookmarkStarStatus(string url)
@@ -405,7 +517,69 @@ namespace WebSystemUwp
         }
 
         // =========================================================================
-        // 4. TÌM TRONG TRANG (FIND IN PAGE)
+        // 5. OFFLINE PAGES (ĐỌC NGOẠI TUYẾN)
+        // =========================================================================
+
+        private async void SaveCurrentPageOffline_Click(object sender, RoutedEventArgs e)
+        {
+            if (_activeTab == null || string.IsNullOrWhiteSpace(_activeTab.Url) || _activeTab.Url == NewTabHomeUrl)
+                return;
+
+            try
+            {
+                string html = await BrowserWebView.InvokeScriptAsync("eval", new[] { "document.documentElement.outerHTML;" });
+                if (!string.IsNullOrWhiteSpace(html))
+                {
+                    var saved = await CacheService.SavePageOfflineAsync(_activeTab.Title, _activeTab.Url, html);
+                    if (saved != null)
+                    {
+                        _offlinePages.Insert(0, saved);
+                    }
+                }
+            }
+            catch {}
+        }
+
+        private async void OpenOfflinePages_Click(object sender, RoutedEventArgs e)
+        {
+            _offlinePages = await CacheService.LoadOfflinePagesAsync();
+            OfflinePagesListView.ItemsSource = _offlinePages;
+            OfflineOverlay.Visibility = Visibility.Visible;
+        }
+
+        private void CloseOfflinePages_Click(object sender, RoutedEventArgs e)
+        {
+            OfflineOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private async void OfflinePageItem_Click(object sender, ItemClickEventArgs e)
+        {
+            if (e.ClickedItem is OfflinePageItem item)
+            {
+                OfflineOverlay.Visibility = Visibility.Collapsed;
+                string html = await CacheService.GetOfflinePageHtmlAsync(item.Id);
+                if (!string.IsNullOrEmpty(html))
+                {
+                    NewTabHomeView.Visibility = Visibility.Collapsed;
+                    BrowserWebView.Visibility = Visibility.Visible;
+                    OmniUrlBox.Text = "offline://" + item.Title;
+                    BrowserWebView.NavigateToString(html);
+                }
+            }
+        }
+
+        private async void DeleteOfflinePage_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is string id)
+            {
+                await CacheService.DeleteOfflinePageAsync(id);
+                var match = _offlinePages.FirstOrDefault(p => p.Id == id);
+                if (match != null) _offlinePages.Remove(match);
+            }
+        }
+
+        // =========================================================================
+        // 6. TÌM TRONG TRANG (FIND IN PAGE)
         // =========================================================================
 
         private void OpenFindInPage_Click(object sender, RoutedEventArgs e)
@@ -479,7 +653,7 @@ namespace WebSystemUwp
         }
 
         // =========================================================================
-        // 5. ENGINE OPTIMIZATION & TIÊM SCRIPTS
+        // 7. ENGINE OPTIMIZATION & TIÊM SCRIPTS
         // =========================================================================
 
         private void BrowserWebView_NavigationStarting(WebView sender, WebViewNavigationStartingEventArgs args)
@@ -497,6 +671,8 @@ namespace WebSystemUwp
                 }
                 UpdateBookmarkStarStatus(args.Uri.ToString());
             }
+
+            ShowBottomNavBar();
         }
 
         private void BrowserWebView_ContentLoading(WebView sender, WebViewContentLoadingEventArgs args)
@@ -505,31 +681,26 @@ namespace WebSystemUwp
 
         private async void BrowserWebView_DOMContentLoaded(WebView sender, WebViewDOMContentLoadedEventArgs args)
         {
-            // 1. Tiêm Modern JS Polyfills
             if (MenuTogglePolyfills.IsChecked)
             {
                 try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetModernPolyfillsScript() }); } catch {}
             }
 
-            // 2. Tiêm Chặn quảng cáo
             if (MenuToggleAdBlock.IsChecked)
             {
                 try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetContentBlockerScript() }); } catch {}
             }
 
-            // 3. Tiêm Chặn hình ảnh
             if (MenuToggleImgBlock.IsChecked)
             {
                 try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetImageBlockerScript() }); } catch {}
             }
 
-            // 4. Tiêm Dark Mode
             if (MenuToggleDarkMode.IsChecked)
             {
                 try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() }); } catch {}
             }
 
-            // 5. Tiêm Zoom
             if (_currentZoom != 100)
             {
                 try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetZoomScript(_currentZoom) }); } catch {}
@@ -549,13 +720,18 @@ namespace WebSystemUwp
                     _activeTab.Title = args.Uri.Host;
                 }
 
-                // Ghi lại lịch sử truy cập
                 HistoryService.RecordVisit(_history, _activeTab.Title, args.Uri.ToString());
+                UpdateOmniboxDisplay();
             }
 
-            OmniBackButton.IsEnabled = BrowserWebView.CanGoBack;
             BottomBackButton.IsEnabled = BrowserWebView.CanGoBack;
             BottomForwardButton.IsEnabled = BrowserWebView.CanGoForward;
+
+            // Bắt đầu đếm 3 giây để tự ẩn Bottom Bar
+            if (SettingsService.AutoHideBottomBar)
+            {
+                _autoHideNavTimer.Start();
+            }
         }
 
         private void BrowserWebView_NewWindowRequested(WebView sender, WebViewNewWindowRequestedEventArgs args)
@@ -565,7 +741,7 @@ namespace WebSystemUwp
         }
 
         // =========================================================================
-        // 6. TIỆN ÍCH MENU: READER MODE, ZOOM, SHARE, COPY, USER-AGENT
+        // 8. TIỆN ÍCH MENU & CÀI ĐẶT
         // =========================================================================
 
         private async void ToggleReaderMode_Click(object sender, RoutedEventArgs e)
@@ -631,8 +807,57 @@ namespace WebSystemUwp
             }
         }
 
+        private void OpenSettings_Click(object sender, RoutedEventArgs e)
+        {
+            ApplySettingsToUI();
+            SettingsOverlay.Visibility = Visibility.Visible;
+        }
+
+        private void CloseSettings_Click(object sender, RoutedEventArgs e)
+        {
+            SettingsOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void SettingsSearchCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (SettingsSearchCombo.SelectedItem is ComboBoxItem item && item.Content != null)
+            {
+                SettingsService.SearchEngine = item.Content.ToString();
+            }
+        }
+
+        private void SettingsAutoHideToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            SettingsService.AutoHideBottomBar = SettingsAutoHideToggle.IsOn;
+            if (!SettingsService.AutoHideBottomBar) ShowBottomNavBar();
+        }
+
+        private void SettingsAdBlockToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            SettingsService.AutoBlockAds = SettingsAdBlockToggle.IsOn;
+            MenuToggleAdBlock.IsChecked = SettingsAdBlockToggle.IsOn;
+        }
+
+        private void SettingsPolyfillsToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            SettingsService.AutoInjectPolyfills = SettingsPolyfillsToggle.IsOn;
+            MenuTogglePolyfills.IsChecked = SettingsPolyfillsToggle.IsOn;
+        }
+
+        private void SettingsDarkModeToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            SettingsService.DarkModeDefault = SettingsDarkModeToggle.IsOn;
+            MenuToggleDarkMode.IsChecked = SettingsDarkModeToggle.IsOn;
+        }
+
+        private void ClearAllBrowsingData_Click(object sender, RoutedEventArgs e)
+        {
+            HistoryService.ClearAll(_history);
+            SettingsOverlay.Visibility = Visibility.Collapsed;
+        }
+
         // =========================================================================
-        // 7. CÔNG CỤ TOOLS & SYSTEM INSPECTOR
+        // 9. CÔNG CỤ WEB ENGINE V2 & CHẨN ĐOÁN HỆ THỐNG
         // =========================================================================
 
         private void OpenToolsDialog_Click(object sender, RoutedEventArgs e)
@@ -650,8 +875,8 @@ namespace WebSystemUwp
         {
             try
             {
-                ToolsDeviceInfoBox.Text = SystemInterop.GetDeviceInfo();
-                ToolsBatteryBox.Text = SystemInterop.GetBatteryAndNetworkInfo();
+                ToolsDeviceInfoBox.Text = DeviceService.GetDeviceSummary();
+                ToolsDiagnosticsBox.Text = DiagnosticsService.GetFullDiagnosticsSummary();
             }
             catch {}
         }
@@ -665,14 +890,28 @@ namespace WebSystemUwp
             if (ToolsMethodCombo.SelectedItem is ComboBoxItem item && item.Content != null)
                 method = item.Content.ToString();
 
-            ToolsApiStatusText.Text = "Đang gửi...";
+            ToolsApiStatusText.Text = "Đang gửi qua Web Engine v2...";
             ToolsApiResponseBox.Text = "";
 
-            var res = await WebService.ExecuteRequestAsync(url, method);
+            var req = new WebEngineRequest
+            {
+                Url = url,
+                Method = method,
+                TimeoutSeconds = 15
+            };
+
+            var res = await WebService.RequestAsync(req);
             ToolsApiStatusText.Text = res.IsSuccess
-                ? $"✅ {res.StatusCode} {res.StatusText} ({res.ElapsedMilliseconds} ms)"
-                : $"❌ Lỗi: {res.StatusCode} {res.StatusText}";
+                ? $"✅ {res.StatusCode} {res.StatusText} ({res.ResponseTimeMs} ms)"
+                : $"❌ Lỗi: {res.ErrorType} — {res.ErrorMessage}";
             ToolsApiResponseBox.Text = res.Body ?? res.ErrorMessage;
+        }
+
+        private async void ToolsTestPing_Click(object sender, RoutedEventArgs e)
+        {
+            ToolsPingResultText.Text = "Đang đo...";
+            long latency = await NetworkService.TestPingAsync("https://www.google.com");
+            ToolsPingResultText.Text = latency >= 0 ? $"⚡ {latency} ms" : "❌ Mất kết nối";
         }
     }
 }
