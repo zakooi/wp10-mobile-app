@@ -200,39 +200,38 @@ namespace WebSystemUwp.Services
         public static string GetFindInPageScript(string keyword, int targetIndex = 0)
         {
             string safeKey = keyword.Replace("\\", "\\\\").Replace("'", "\\'");
-            return $@"
+            string template = @"
 (function() {
-    try {{
-        // Xóa highlight cũ
-        document.querySelectorAll('mark.ws-find-mark').forEach(function(m) {{
+    try {
+        document.querySelectorAll('mark.ws-find-mark').forEach(function(m) {
             var parent = m.parentNode;
             parent.replaceChild(document.createTextNode(m.textContent), m);
             parent.normalize();
-        }});
+        });
 
-        var query = '{safeKey}';
+        var query = '{{KEYWORD}}';
         if (!query) return '0/0';
 
         var matches = [];
         var walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         var n;
-        while(n = walk.nextNode()) {{
-            if (n.parentNode && ['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT'].indexOf(n.parentNode.tagName) === -1) {{
+        while(n = walk.nextNode()) {
+            if (n.parentNode && ['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT'].indexOf(n.parentNode.tagName) === -1) {
                 var idx = n.nodeValue.toLowerCase().indexOf(query.toLowerCase());
-                if (idx !== -1) {{
-                    matches.push({{ node: n, index: idx }});
-                }}
-            }}
-        }}
+                if (idx !== -1) {
+                    matches.push({ node: n, index: idx });
+                }
+            }
+        }
 
         var count = matches.length;
         if (count === 0) return '0/0';
 
-        var active = {targetIndex} % count;
+        var active = {{TARGET_INDEX}} % count;
         if (active < 0) active += count;
 
         var target = matches[active];
-        if (target) {{
+        if (target) {
             var span = document.createElement('mark');
             span.className = 'ws-find-mark';
             span.style.backgroundColor = '#FF9800';
@@ -245,15 +244,16 @@ namespace WebSystemUwp.Services
             span.appendChild(document.createTextNode(query));
             target.node.parentNode.insertBefore(span, after);
 
-            span.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-        }}
+            span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
 
         return (active + 1) + '/' + count;
-    }} catch(e) {{
+    } catch(e) {
         return '0/0';
-    }}
-}})();
+    }
+})();
 ";
+            return template.Replace("{{KEYWORD}}", safeKey).Replace("{{TARGET_INDEX}}", targetIndex.ToString());
         }
 
         public static string GetClearFindInPageScript()
