@@ -150,7 +150,7 @@ namespace WebSystemUwp.Services
                             }
 
                             responseResult.RawBytes = await httpResp.Content.ReadAsByteArrayAsync();
-                            responseResult.ContentLength = responseResult.RawBytes?.LongLength ?? 0;
+                            responseResult.ContentLength = responseResult.RawBytes != null ? (long)responseResult.RawBytes.Length : 0L;
                             responseResult.Body = Encoding.UTF8.GetString(responseResult.RawBytes ?? new byte[0]);
 
                             if (!httpResp.IsSuccessStatusCode)
