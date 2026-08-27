@@ -94,6 +94,8 @@
     <Compile Include="Services\WebService.cs" />
     <Compile Include="Services\SystemInterop.cs" />
     <Compile Include="Services\EngineOptimizer.cs" />
+    <Compile Include="Services\BookmarkService.cs" />
+    <Compile Include="Services\HistoryService.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

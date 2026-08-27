@@ -1,10 +1,13 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
+using Windows.UI;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Input;
+using Windows.UI.Xaml.Media;
 using WebSystemUwp.Services;
 
 namespace WebSystemUwp
@@ -22,8 +25,12 @@ namespace WebSystemUwp
         private const string DefaultHomeUrl = "https://www.google.com";
 
         private ObservableCollection<BrowserTab> _tabs = new ObservableCollection<BrowserTab>();
+        private ObservableCollection<BookmarkItem> _bookmarks;
+        private ObservableCollection<HistoryItem> _history;
         private BrowserTab _activeTab;
         private UserAgentProfile _currentUa = UserAgentProfile.ChromeMobile;
+        private int _findActiveIndex = 0;
+        private int _currentZoom = 100;
 
         public MainPage()
         {
@@ -34,7 +41,15 @@ namespace WebSystemUwp
 
         private void MainPage_Loaded(object sender, RoutedEventArgs e)
         {
-            // Mở tab đầu tiên với trang Google
+            // Nạp Bookmarks & Lịch sử
+            _bookmarks = BookmarkService.LoadBookmarks();
+            _history = HistoryService.LoadHistory();
+
+            BookmarksListView.ItemsSource = _bookmarks;
+            HomeBookmarksListView.ItemsSource = _bookmarks;
+            HistoryListView.ItemsSource = _history;
+
+            // Mở tab đầu tiên
             CreateNewTab(DefaultHomeUrl);
             LoadToolsInfo();
         }
@@ -67,6 +82,7 @@ namespace WebSystemUwp
                 BrowserWebView.Visibility = Visibility.Collapsed;
                 OmniUrlBox.Text = "";
                 OmniLockIcon.Text = "\uE721"; // Search Icon
+                UpdateBookmarkStarStatus("");
             }
             else
             {
@@ -76,6 +92,8 @@ namespace WebSystemUwp
             }
 
             TabSwitcherOverlay.Visibility = Visibility.Collapsed;
+            BookmarksOverlay.Visibility = Visibility.Collapsed;
+            HistoryOverlay.Visibility = Visibility.Collapsed;
         }
 
         private void UpdateTabCountDisplay()
@@ -170,6 +188,8 @@ namespace WebSystemUwp
                 _activeTab.Url = targetUrl;
             }
 
+            UpdateBookmarkStarStatus(targetUrl);
+
             try
             {
                 BrowserWebView.Navigate(new Uri(targetUrl));
@@ -211,6 +231,17 @@ namespace WebSystemUwp
         private void OmniUrlBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             OmniClearButton.Visibility = string.IsNullOrEmpty(OmniUrlBox.Text) ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void OmniUrlBox_GotFocus(object sender, RoutedEventArgs e)
+        {
+            OmniboxBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 138, 180, 248)); // #8AB4F8
+            OmniUrlBox.SelectAll();
+        }
+
+        private void OmniUrlBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            OmniboxBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 60, 60, 60));
         }
 
         private void OmniBackButton_Click(object sender, RoutedEventArgs e)
@@ -256,7 +287,199 @@ namespace WebSystemUwp
         }
 
         // =========================================================================
-        // 3. ENGINE OPTIMIZATION & TIÊM POLYFILLS / ADBLOCK / DARKMODE
+        // 3. BOOKMARKS & LỊCH SỬ (HISTORY)
+        // =========================================================================
+
+        private void UpdateBookmarkStarStatus(string url)
+        {
+            bool bookmarked = BookmarkService.IsBookmarked(_bookmarks, url);
+            OmniBookmarkStar.Text = bookmarked ? "\uE735" : "\uE734"; // Filled vs Outline star
+            OmniBookmarkStar.Foreground = new SolidColorBrush(bookmarked ? Color.FromArgb(255, 251, 188, 5) : Color.FromArgb(255, 158, 158, 158));
+        }
+
+        private void OmniBookmarkButton_Click(object sender, RoutedEventArgs e)
+        {
+            string currentUrl = _activeTab?.Url;
+            if (string.IsNullOrWhiteSpace(currentUrl) || currentUrl == NewTabHomeUrl) return;
+
+            string title = _activeTab?.Title ?? currentUrl;
+
+            if (BookmarkService.IsBookmarked(_bookmarks, currentUrl))
+            {
+                var existing = _bookmarks.FirstOrDefault(b => b.Url.Equals(currentUrl, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                {
+                    _bookmarks.Remove(existing);
+                    BookmarkService.SaveBookmarks(_bookmarks);
+                }
+            }
+            else
+            {
+                var newItem = BookmarkService.CreateBookmark(title, currentUrl);
+                if (newItem != null)
+                {
+                    _bookmarks.Insert(0, newItem);
+                    BookmarkService.SaveBookmarks(_bookmarks);
+                }
+            }
+
+            UpdateBookmarkStarStatus(currentUrl);
+        }
+
+        private void OpenBookmarks_Click(object sender, RoutedEventArgs e)
+        {
+            BookmarksOverlay.Visibility = Visibility.Visible;
+        }
+
+        private void CloseBookmarks_Click(object sender, RoutedEventArgs e)
+        {
+            BookmarksOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void BookmarkItem_Click(object sender, ItemClickEventArgs e)
+        {
+            if (e.ClickedItem is BookmarkItem b)
+            {
+                BookmarksOverlay.Visibility = Visibility.Collapsed;
+                NavigateBrowser(b.Url);
+            }
+        }
+
+        private void HomeBookmarkItem_Click(object sender, ItemClickEventArgs e)
+        {
+            if (e.ClickedItem is BookmarkItem b)
+            {
+                NavigateBrowser(b.Url);
+            }
+        }
+
+        private void DeleteBookmarkButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is string id)
+            {
+                var item = _bookmarks.FirstOrDefault(b => b.Id == id);
+                if (item != null)
+                {
+                    _bookmarks.Remove(item);
+                    BookmarkService.SaveBookmarks(_bookmarks);
+                    UpdateBookmarkStarStatus(_activeTab?.Url);
+                }
+            }
+        }
+
+        private void OpenHistory_Click(object sender, RoutedEventArgs e)
+        {
+            HistoryOverlay.Visibility = Visibility.Visible;
+        }
+
+        private void CloseHistory_Click(object sender, RoutedEventArgs e)
+        {
+            HistoryOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void HistoryItem_Click(object sender, ItemClickEventArgs e)
+        {
+            if (e.ClickedItem is HistoryItem h)
+            {
+                HistoryOverlay.Visibility = Visibility.Collapsed;
+                NavigateBrowser(h.Url);
+            }
+        }
+
+        private void DeleteHistoryItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is string id)
+            {
+                var item = _history.FirstOrDefault(h => h.Id == id);
+                if (item != null)
+                {
+                    _history.Remove(item);
+                    HistoryService.SaveHistory(_history);
+                }
+            }
+        }
+
+        private void ClearHistory_Click(object sender, RoutedEventArgs e)
+        {
+            HistoryService.ClearAll(_history);
+        }
+
+        // =========================================================================
+        // 4. TÌM TRONG TRANG (FIND IN PAGE)
+        // =========================================================================
+
+        private void OpenFindInPage_Click(object sender, RoutedEventArgs e)
+        {
+            FindInPageBar.Visibility = Visibility.Visible;
+            FindInputBox.Focus(FocusState.Programmatic);
+        }
+
+        private void CloseFindInPage_Click(object sender, RoutedEventArgs e)
+        {
+            FindInPageBar.Visibility = Visibility.Collapsed;
+            FindInputBox.Text = "";
+            FindCountText.Text = "0/0";
+            ExecuteFindClear();
+        }
+
+        private async void ExecuteFindQuery(int index)
+        {
+            string q = FindInputBox.Text?.Trim();
+            if (string.IsNullOrEmpty(q))
+            {
+                FindCountText.Text = "0/0";
+                ExecuteFindClear();
+                return;
+            }
+
+            try
+            {
+                string script = EngineOptimizer.GetFindInPageScript(q, index);
+                string res = await BrowserWebView.InvokeScriptAsync("eval", new[] { script });
+                FindCountText.Text = string.IsNullOrEmpty(res) ? "0/0" : res;
+            }
+            catch {}
+        }
+
+        private async void ExecuteFindClear()
+        {
+            try
+            {
+                await BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetClearFindInPageScript() });
+            }
+            catch {}
+        }
+
+        private void FindInputBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            _findActiveIndex = 0;
+            ExecuteFindQuery(_findActiveIndex);
+        }
+
+        private void FindInputBox_KeyDown(object sender, KeyRoutedEventArgs e)
+        {
+            if (e.Key == VirtualKey.Enter)
+            {
+                _findActiveIndex++;
+                ExecuteFindQuery(_findActiveIndex);
+                e.Handled = true;
+            }
+        }
+
+        private void FindNext_Click(object sender, RoutedEventArgs e)
+        {
+            _findActiveIndex++;
+            ExecuteFindQuery(_findActiveIndex);
+        }
+
+        private void FindPrev_Click(object sender, RoutedEventArgs e)
+        {
+            _findActiveIndex--;
+            ExecuteFindQuery(_findActiveIndex);
+        }
+
+        // =========================================================================
+        // 5. ENGINE OPTIMIZATION & TIÊM SCRIPTS
         // =========================================================================
 
         private void BrowserWebView_NavigationStarting(WebView sender, WebViewNavigationStartingEventArgs args)
@@ -267,49 +490,49 @@ namespace WebSystemUwp
             if (args.Uri != null)
             {
                 OmniUrlBox.Text = args.Uri.ToString();
-                OmniLockIcon.Text = args.Uri.Scheme == "https" ? "\uE72E" : "\uE7BA"; // Lock vs Warning icon
+                OmniLockIcon.Text = args.Uri.Scheme == "https" ? "\uE72E" : "\uE7BA";
                 if (_activeTab != null)
                 {
                     _activeTab.Url = args.Uri.ToString();
                 }
+                UpdateBookmarkStarStatus(args.Uri.ToString());
             }
         }
 
         private void BrowserWebView_ContentLoading(WebView sender, WebViewContentLoadingEventArgs args)
         {
-            // Bắt đầu tải nội dung
         }
 
         private async void BrowserWebView_DOMContentLoaded(WebView sender, WebViewDOMContentLoadedEventArgs args)
         {
-            // 1. Tiêm Modern JavaScript Polyfills
+            // 1. Tiêm Modern JS Polyfills
             if (MenuTogglePolyfills.IsChecked)
             {
-                try
-                {
-                    await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetModernPolyfillsScript() });
-                }
-                catch {}
+                try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetModernPolyfillsScript() }); } catch {}
             }
 
-            // 2. Tiêm AdBlock & Cookie Blocker
+            // 2. Tiêm Chặn quảng cáo
             if (MenuToggleAdBlock.IsChecked)
             {
-                try
-                {
-                    await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetContentBlockerScript() });
-                }
-                catch {}
+                try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetContentBlockerScript() }); } catch {}
             }
 
-            // 3. Tiêm AMOLED Dark Mode
+            // 3. Tiêm Chặn hình ảnh
+            if (MenuToggleImgBlock.IsChecked)
+            {
+                try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetImageBlockerScript() }); } catch {}
+            }
+
+            // 4. Tiêm Dark Mode
             if (MenuToggleDarkMode.IsChecked)
             {
-                try
-                {
-                    await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() });
-                }
-                catch {}
+                try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() }); } catch {}
+            }
+
+            // 5. Tiêm Zoom
+            if (_currentZoom != 100)
+            {
+                try { await sender.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetZoomScript(_currentZoom) }); } catch {}
             }
         }
 
@@ -318,13 +541,16 @@ namespace WebSystemUwp
             BrowserProgressBar.Visibility = Visibility.Collapsed;
             BrowserProgressBar.IsIndeterminate = false;
 
-            if (_activeTab != null)
+            if (_activeTab != null && args.Uri != null)
             {
                 _activeTab.Title = BrowserWebView.DocumentTitle;
                 if (string.IsNullOrWhiteSpace(_activeTab.Title))
                 {
-                    _activeTab.Title = args.Uri?.Host ?? "Trang web";
+                    _activeTab.Title = args.Uri.Host;
                 }
+
+                // Ghi lại lịch sử truy cập
+                HistoryService.RecordVisit(_history, _activeTab.Title, args.Uri.ToString());
             }
 
             OmniBackButton.IsEnabled = BrowserWebView.CanGoBack;
@@ -339,26 +565,55 @@ namespace WebSystemUwp
         }
 
         // =========================================================================
-        // 4. MENU CHROME & TÙY CHỌN ENGINE
+        // 6. TIỆN ÍCH MENU: READER MODE, ZOOM, SHARE, COPY, USER-AGENT
         // =========================================================================
 
-        private void MenuToggleAdBlock_Click(object sender, RoutedEventArgs e)
-        {
-            BrowserWebView.Refresh();
-        }
-
-        private void MenuTogglePolyfills_Click(object sender, RoutedEventArgs e)
-        {
-            BrowserWebView.Refresh();
-        }
-
-        private async void MenuToggleDarkMode_Click(object sender, RoutedEventArgs e)
+        private async void ToggleReaderMode_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                await BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() });
+                await BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetReaderModeScript() });
             }
             catch {}
+        }
+
+        private void ShareCurrentPage_Click(object sender, RoutedEventArgs e)
+        {
+            var dataTransferManager = DataTransferManager.GetForCurrentView();
+            dataTransferManager.DataRequested += (s, args) =>
+            {
+                var req = args.Request;
+                req.Data.Properties.Title = _activeTab?.Title ?? "Trang Web";
+                req.Data.SetWebLink(new Uri(_activeTab?.Url ?? DefaultHomeUrl));
+            };
+            DataTransferManager.ShowShareUI();
+        }
+
+        private void CopyCurrentUrl_Click(object sender, RoutedEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(_activeTab?.Url))
+            {
+                var package = new DataPackage();
+                package.SetText(_activeTab.Url);
+                Clipboard.SetContent(package);
+            }
+        }
+
+        private void SetZoom_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuFlyoutItem item && item.Tag is string tag && int.TryParse(tag, out int zoom))
+            {
+                _currentZoom = zoom;
+                try { BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetZoomScript(_currentZoom) }); } catch {}
+            }
+        }
+
+        private void MenuToggleAdBlock_Click(object sender, RoutedEventArgs e) => BrowserWebView.Refresh();
+        private void MenuTogglePolyfills_Click(object sender, RoutedEventArgs e) => BrowserWebView.Refresh();
+        private void MenuToggleImgBlock_Click(object sender, RoutedEventArgs e) => BrowserWebView.Refresh();
+        private async void MenuToggleDarkMode_Click(object sender, RoutedEventArgs e)
+        {
+            try { await BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() }); } catch {}
         }
 
         private void MenuToggleDesktop_Click(object sender, RoutedEventArgs e)
@@ -369,18 +624,15 @@ namespace WebSystemUwp
 
         private void SetUserAgent_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is MenuFlyoutItem item && item.Tag is string tag)
+            if (sender is MenuFlyoutItem item && item.Tag is string tag && Enum.TryParse<UserAgentProfile>(tag, out var profile))
             {
-                if (Enum.TryParse<UserAgentProfile>(tag, out var profile))
-                {
-                    _currentUa = profile;
-                    BrowserWebView.Refresh();
-                }
+                _currentUa = profile;
+                BrowserWebView.Refresh();
             }
         }
 
         // =========================================================================
-        // 5. CÔNG CỤ TOOLS & SYSTEM INSPECTOR
+        // 7. CÔNG CỤ TOOLS & SYSTEM INSPECTOR
         // =========================================================================
 
         private void OpenToolsDialog_Click(object sender, RoutedEventArgs e)
