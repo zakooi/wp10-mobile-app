@@ -2,13 +2,15 @@ mod http_client;
 mod layout_engine;
 
 use http_client::{execute_http_request, WsHttpResponse};
-use layout_engine::{render_html_to_display_list, WsRenderBuffer};
+use layout_engine::{
+    extract_stylesheet_urls, render_html_with_options, RenderOptions, WsRenderBuffer,
+};
 use std::env;
 use std::slice;
 use std::str;
 
 const VERSION_MAJOR: u32 = 0;
-const VERSION_MINOR: u32 = 3;
+const VERSION_MINOR: u32 = 4;
 const VERSION_PATCH: u32 = 0;
 
 /// Copies `text` as UTF-8 bytes into `out_buf` (truncating cleanly at a UTF-8 char boundary).
@@ -59,7 +61,7 @@ pub extern "C" fn ws_core_version() -> u32 {
 #[no_mangle]
 pub extern "C" fn ws_core_get_info(out_buf: *mut u8, out_cap: usize) -> i32 {
     let info = format!(
-        "websystem_core v{}.{}.{} ({}/{}) [rustls+html5ever+taffy]",
+        "websystem_core v{}.{}.{} ({}/{}) [rustls+cookies+html5ever+taffy+WSR2]",
         VERSION_MAJOR,
         VERSION_MINOR,
         VERSION_PATCH,
@@ -100,31 +102,36 @@ pub extern "C" fn ws_core_smoke_test(
     write_utf8_to_buf(&report, out_buf, out_cap)
 }
 
-/// Executes an HTTP/HTTPS request via `ureq` + `rustls` (TLS 1.3/1.2) and returns an owned response handle.
+/// Executes an HTTP/HTTPS request via `ureq` + `rustls` (TLS 1.3/1.2) with an explicit `max_body_bytes` cap.
 /// Caller must release the returned pointer using `ws_http_response_free`.
 #[no_mangle]
-pub extern "C" fn ws_http_request(
+pub extern "C" fn ws_http_request_v2(
     method_ptr: *const u8,
     method_len: usize,
     url_ptr: *const u8,
     url_len: usize,
     ua_ptr: *const u8,
     ua_len: usize,
+    ct_ptr: *const u8,
+    ct_len: usize,
     body_ptr: *const u8,
     body_len: usize,
     timeout_secs: u32,
+    max_body_bytes: u32,
 ) -> *mut WsHttpResponse {
     // SAFETY: Caller guarantees valid pointers for the specified lengths during this synchronous call.
     let method_bytes = unsafe { read_input_bytes(method_ptr, method_len) };
     let url_bytes = unsafe { read_input_bytes(url_ptr, url_len) };
     let ua_bytes = unsafe { read_input_bytes(ua_ptr, ua_len) };
+    let ct_bytes = unsafe { read_input_bytes(ct_ptr, ct_len) };
     let body_bytes = unsafe { read_input_bytes(body_ptr, body_len) };
 
     let method = str::from_utf8(method_bytes).unwrap_or("GET");
     let url = str::from_utf8(url_bytes).unwrap_or("");
     let ua = str::from_utf8(ua_bytes).unwrap_or("");
+    let ct = str::from_utf8(ct_bytes).unwrap_or("");
 
-    let response = execute_http_request(method, url, ua, body_bytes, timeout_secs);
+    let response = execute_http_request(method, url, ua, ct, body_bytes, timeout_secs, max_body_bytes);
     Box::into_raw(Box::new(response))
 }
 
@@ -133,7 +140,7 @@ pub extern "C" fn ws_http_response_status(resp: *const WsHttpResponse) -> i32 {
     if resp.is_null() {
         return 0;
     }
-    // SAFETY: Non-null handle created by `ws_http_request`.
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
     unsafe { (*resp).status_code }
 }
 
@@ -142,7 +149,7 @@ pub extern "C" fn ws_http_response_elapsed_ms(resp: *const WsHttpResponse) -> u6
     if resp.is_null() {
         return 0;
     }
-    // SAFETY: Non-null handle created by `ws_http_request`.
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
     unsafe { (*resp).elapsed_ms }
 }
 
@@ -155,7 +162,7 @@ pub extern "C" fn ws_http_response_content_type(
     if resp.is_null() {
         return -1;
     }
-    // SAFETY: Non-null handle created by `ws_http_request`.
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
     let ct = unsafe { &(*resp).content_type };
     write_utf8_to_buf(ct, out_buf, out_cap)
 }
@@ -169,9 +176,23 @@ pub extern "C" fn ws_http_response_tls_info(
     if resp.is_null() {
         return -1;
     }
-    // SAFETY: Non-null handle created by `ws_http_request`.
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
     let info = unsafe { &(*resp).tls_info };
     write_utf8_to_buf(info, out_buf, out_cap)
+}
+
+#[no_mangle]
+pub extern "C" fn ws_http_response_final_url(
+    resp: *const WsHttpResponse,
+    out_buf: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    if resp.is_null() {
+        return -1;
+    }
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
+    let url = unsafe { &(*resp).final_url };
+    write_utf8_to_buf(url, out_buf, out_cap)
 }
 
 #[no_mangle]
@@ -183,7 +204,7 @@ pub extern "C" fn ws_http_response_error(
     if resp.is_null() {
         return -1;
     }
-    // SAFETY: Non-null handle created by `ws_http_request`.
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
     let err = unsafe { &(*resp).error_message };
     write_utf8_to_buf(err, out_buf, out_cap)
 }
@@ -193,7 +214,7 @@ pub extern "C" fn ws_http_response_body_len(resp: *const WsHttpResponse) -> usiz
     if resp.is_null() {
         return 0;
     }
-    // SAFETY: Non-null handle created by `ws_http_request`.
+    // SAFETY: Non-null handle created by `ws_http_request_v2`.
     unsafe { (*resp).body.len() }
 }
 
@@ -217,32 +238,72 @@ pub extern "C" fn ws_http_response_copy_body(
 #[no_mangle]
 pub extern "C" fn ws_http_response_free(resp: *mut WsHttpResponse) {
     if !resp.is_null() {
-        // SAFETY: Reclaims the `Box` originally allocated by `ws_http_request`.
+        // SAFETY: Reclaims the `Box` originally allocated by `ws_http_request_v2`.
         unsafe {
             drop(Box::from_raw(resp));
         }
     }
 }
 
-/// Parses HTML + CSS and computes Taffy layout into a binary Display List (`WSR1`).
-/// Caller must release the returned pointer using `ws_render_buffer_free`.
+/// Extracts newline-separated resolved `<link rel="stylesheet" href="...">` URLs from HTML.
 #[no_mangle]
-pub extern "C" fn ws_render_html(
+pub extern "C" fn ws_extract_stylesheets(
     html_ptr: *const u8,
     html_len: usize,
     base_url_ptr: *const u8,
     base_url_len: usize,
-    viewport_width: f32,
-    dark_mode: u8,
-) -> *mut WsRenderBuffer {
-    // SAFETY: Caller guarantees valid input byte slices for this synchronous call.
+    out_buf: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    if out_buf.is_null() || out_cap == 0 {
+        return -1;
+    }
+    // SAFETY: Caller guarantees valid input slices for this synchronous call.
     let html_bytes = unsafe { read_input_bytes(html_ptr, html_len) };
     let url_bytes = unsafe { read_input_bytes(base_url_ptr, base_url_len) };
 
     let html = String::from_utf8_lossy(html_bytes);
     let base_url = str::from_utf8(url_bytes).unwrap_or("");
 
-    let buf = render_html_to_display_list(&html, base_url, viewport_width, dark_mode != 0);
+    let urls = extract_stylesheet_urls(&html, base_url);
+    let joined = urls.join("\n");
+    write_utf8_to_buf(&joined, out_buf, out_cap)
+}
+
+/// Renders HTML + CSS + options into a `WSR2` binary Display List.
+/// Caller must release the returned pointer using `ws_render_buffer_free`.
+#[no_mangle]
+pub extern "C" fn ws_render_html_v2(
+    html_ptr: *const u8,
+    html_len: usize,
+    base_url_ptr: *const u8,
+    base_url_len: usize,
+    extra_css_ptr: *const u8,
+    extra_css_len: usize,
+    viewport_width: f32,
+    dark_mode: u8,
+    block_ads: u8,
+    block_images: u8,
+    reader_mode: u8,
+) -> *mut WsRenderBuffer {
+    // SAFETY: Caller guarantees valid input byte slices for this synchronous call.
+    let html_bytes = unsafe { read_input_bytes(html_ptr, html_len) };
+    let url_bytes = unsafe { read_input_bytes(base_url_ptr, base_url_len) };
+    let css_bytes = unsafe { read_input_bytes(extra_css_ptr, extra_css_len) };
+
+    let html = String::from_utf8_lossy(html_bytes);
+    let base_url = str::from_utf8(url_bytes).unwrap_or("");
+    let extra_css = String::from_utf8_lossy(css_bytes);
+
+    let opts = RenderOptions {
+        viewport_width,
+        dark_mode: dark_mode != 0,
+        block_ads: block_ads != 0,
+        block_images: block_images != 0,
+        reader_mode: reader_mode != 0,
+    };
+
+    let buf = render_html_with_options(&html, base_url, &extra_css, opts);
     Box::into_raw(Box::new(buf))
 }
 
@@ -251,7 +312,7 @@ pub extern "C" fn ws_render_buffer_len(buf: *const WsRenderBuffer) -> usize {
     if buf.is_null() {
         return 0;
     }
-    // SAFETY: Non-null handle created by `ws_render_html`.
+    // SAFETY: Non-null handle created by `ws_render_html_v2`.
     unsafe { (*buf).bytes.len() }
 }
 
@@ -275,7 +336,7 @@ pub extern "C" fn ws_render_buffer_copy(
 #[no_mangle]
 pub extern "C" fn ws_render_buffer_free(buf: *mut WsRenderBuffer) {
     if !buf.is_null() {
-        // SAFETY: Reclaims the `Box` originally allocated by `ws_render_html`.
+        // SAFETY: Reclaims the `Box` originally allocated by `ws_render_html_v2`.
         unsafe {
             drop(Box::from_raw(buf));
         }

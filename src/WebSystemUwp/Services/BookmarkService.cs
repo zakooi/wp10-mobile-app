@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
+using Windows.Data.Json;
 using Windows.Storage;
 
 namespace WebSystemUwp.Services
@@ -17,26 +19,50 @@ namespace WebSystemUwp.Services
     }
 
     /// <summary>
-    /// Quản lý danh sách Bookmark (Dấu trang yêu thích) lưu bền vững trong LocalSettings.
+    /// Quản lý danh sách Bookmark lưu dưới dạng JSON trong LocalFolder (không bị giới hạn 8 KB).
     /// </summary>
     public static class BookmarkService
     {
-        private const string BookmarksKey = "UserBookmarks_v1";
+        private const string LegacyBookmarksKey = "UserBookmarks_v1";
+        private const string BookmarksFileName = "bookmarks_v1.json";
         private static readonly string[] ColorPalette = { "#EA4335", "#4285F4", "#FBBC05", "#34A853", "#9C27B0", "#009688", "#FF5722", "#607D8B" };
+
+        private static string FilePath => Path.Combine(ApplicationData.Current.LocalFolder.Path, BookmarksFileName);
 
         public static ObservableCollection<BookmarkItem> LoadBookmarks()
         {
             var collection = new ObservableCollection<BookmarkItem>();
             try
             {
-                var localSettings = ApplicationData.Current.LocalSettings;
-                if (localSettings.Values.ContainsKey(BookmarksKey))
+                if (File.Exists(FilePath))
                 {
-                    string raw = localSettings.Values[BookmarksKey] as string;
-                    if (!string.IsNullOrWhiteSpace(raw))
+                    string json = File.ReadAllText(FilePath);
+                    if (JsonArray.TryParse(json, out var arr))
                     {
-                        var lines = raw.Split(new[] { "|||" }, StringSplitOptions.RemoveEmptyEntries);
-                        foreach (var line in lines)
+                        foreach (var val in arr)
+                        {
+                            if (val.ValueType != JsonValueType.Object) continue;
+                            var obj = val.GetObject();
+                            collection.Add(new BookmarkItem
+                            {
+                                Id = obj.GetNamedString("id", Guid.NewGuid().ToString()),
+                                Title = obj.GetNamedString("title", ""),
+                                Url = obj.GetNamedString("url", ""),
+                                IconChar = obj.GetNamedString("icon", "W"),
+                                IconColor = obj.GetNamedString("color", "#4285F4"),
+                                CreatedAt = DateTime.UtcNow
+                            });
+                        }
+                    }
+                }
+                else
+                {
+                    var localSettings = ApplicationData.Current.LocalSettings;
+                    if (localSettings.Values.ContainsKey(LegacyBookmarksKey) &&
+                        localSettings.Values[LegacyBookmarksKey] is string raw &&
+                        !string.IsNullOrWhiteSpace(raw))
+                    {
+                        foreach (var line in raw.Split(new[] { "|||" }, StringSplitOptions.RemoveEmptyEntries))
                         {
                             var parts = line.Split(new[] { "^^^" }, StringSplitOptions.None);
                             if (parts.Length >= 4)
@@ -52,6 +78,11 @@ namespace WebSystemUwp.Services
                                 });
                             }
                         }
+                        if (collection.Count > 0)
+                        {
+                            SaveBookmarks(collection);
+                            localSettings.Values.Remove(LegacyBookmarksKey);
+                        }
                     }
                 }
             }
@@ -60,7 +91,6 @@ namespace WebSystemUwp.Services
                 System.Diagnostics.Debug.WriteLine("LoadBookmarks Error: " + ex.Message);
             }
 
-            // Nếu rỗng, nạp danh sách gợi ý ban đầu
             if (collection.Count == 0)
             {
                 AddDefaultBookmarks(collection);
@@ -74,9 +104,18 @@ namespace WebSystemUwp.Services
         {
             try
             {
-                var localSettings = ApplicationData.Current.LocalSettings;
-                var rawList = bookmarks.Select(b => $"{b.Id}^^^{b.Title}^^^{b.Url}^^^{b.IconChar}^^^{b.IconColor}");
-                localSettings.Values[BookmarksKey] = string.Join("|||", rawList);
+                var arr = new JsonArray();
+                foreach (var b in bookmarks)
+                {
+                    var obj = new JsonObject();
+                    obj.SetNamedValue("id", JsonValue.CreateStringValue(b.Id ?? string.Empty));
+                    obj.SetNamedValue("title", JsonValue.CreateStringValue(b.Title ?? string.Empty));
+                    obj.SetNamedValue("url", JsonValue.CreateStringValue(b.Url ?? string.Empty));
+                    obj.SetNamedValue("icon", JsonValue.CreateStringValue(b.IconChar ?? "W"));
+                    obj.SetNamedValue("color", JsonValue.CreateStringValue(b.IconColor ?? "#4285F4"));
+                    arr.Add(obj);
+                }
+                File.WriteAllText(FilePath, arr.Stringify());
             }
             catch (Exception ex)
             {

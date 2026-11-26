@@ -31,6 +31,12 @@ jobs:
         with:
           components: rust-src
 
+      - name: Run Rust Core Unit Tests
+        if: matrix.arch == 'x86'
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src/websystem_core/Cargo.toml --lib --config 'profile.dev.panic="unwind"'
+
       - name: Build Rust Core (websystem_core.dll)
         shell: pwsh
         run: |

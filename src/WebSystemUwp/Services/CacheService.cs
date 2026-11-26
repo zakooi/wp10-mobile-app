@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Windows.Data.Json;
 using Windows.Storage;
 
 namespace WebSystemUwp.Services
@@ -21,44 +22,75 @@ namespace WebSystemUwp.Services
     }
 
     /// <summary>
-    /// Quản lý bộ nhớ đệm HTTP và lưu trữ các trang web ngoại tuyến (Offline Pages) để đọc khi mất mạng.
+    /// Quản lý bộ nhớ đệm và lưu trữ các trang web ngoại tuyến (JSON index trong LocalFolder).
     /// </summary>
     public static class CacheService
     {
         private const string OfflineFolder = "OfflinePages";
-        private const string OfflineIndexKey = "OfflinePages_Index_v1";
+        private const string LegacyOfflineIndexKey = "OfflinePages_Index_v1";
+        private const string OfflineIndexFileName = "offline_index_v1.json";
 
-        public static async Task<ObservableCollection<OfflinePageItem>> LoadOfflinePagesAsync()
+        private static string IndexFilePath => Path.Combine(ApplicationData.Current.LocalFolder.Path, OfflineIndexFileName);
+
+        public static Task<ObservableCollection<OfflinePageItem>> LoadOfflinePagesAsync()
         {
             var collection = new ObservableCollection<OfflinePageItem>();
             try
             {
-                var localSettings = ApplicationData.Current.LocalSettings;
-                if (localSettings.Values.ContainsKey(OfflineIndexKey))
+                if (File.Exists(IndexFilePath))
                 {
-                    string raw = localSettings.Values[OfflineIndexKey] as string;
-                    if (!string.IsNullOrWhiteSpace(raw))
+                    string json = File.ReadAllText(IndexFilePath);
+                    if (JsonArray.TryParse(json, out var arr))
                     {
-                        var lines = raw.Split(new[] { "|||" }, StringSplitOptions.RemoveEmptyEntries);
-                        foreach (var line in lines)
+                        foreach (var val in arr)
                         {
-                            var parts = line.Split(new[] { "^^^" }, StringSplitOptions.None);
-                            if (parts.Length >= 5)
+                            if (val.ValueType != JsonValueType.Object) continue;
+                            var obj = val.GetObject();
+                            string id = obj.GetNamedString("id", "");
+                            if (string.IsNullOrEmpty(id)) continue;
+                            long.TryParse(obj.GetNamedString("size", "0"), out long size);
+                            long.TryParse(obj.GetNamedString("ticks", "0"), out long ticks);
+                            collection.Add(new OfflinePageItem
                             {
-                                if (long.TryParse(parts[3], out long size) && long.TryParse(parts[4], out long ticks))
-                                {
-                                    collection.Add(new OfflinePageItem
-                                    {
-                                        Id = parts[0],
-                                        Title = parts[1],
-                                        Url = parts[2],
-                                        FileName = parts[0] + ".html",
-                                        SizeBytes = size,
-                                        SavedAt = new DateTime(ticks, DateTimeKind.Utc)
-                                    });
-                                }
-                            }
+                                Id = id,
+                                Title = obj.GetNamedString("title", ""),
+                                Url = obj.GetNamedString("url", ""),
+                                FileName = id + ".html",
+                                SizeBytes = size,
+                                SavedAt = new DateTime(ticks > 0 ? ticks : DateTime.UtcNow.Ticks, DateTimeKind.Utc)
+                            });
                         }
+                        return Task.FromResult(collection);
+                    }
+                }
+
+                var localSettings = ApplicationData.Current.LocalSettings;
+                if (localSettings.Values.ContainsKey(LegacyOfflineIndexKey) &&
+                    localSettings.Values[LegacyOfflineIndexKey] is string raw &&
+                    !string.IsNullOrWhiteSpace(raw))
+                {
+                    foreach (var line in raw.Split(new[] { "|||" }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var parts = line.Split(new[] { "^^^" }, StringSplitOptions.None);
+                        if (parts.Length >= 5 &&
+                            long.TryParse(parts[3], out long size) &&
+                            long.TryParse(parts[4], out long ticks))
+                        {
+                            collection.Add(new OfflinePageItem
+                            {
+                                Id = parts[0],
+                                Title = parts[1],
+                                Url = parts[2],
+                                FileName = parts[0] + ".html",
+                                SizeBytes = size,
+                                SavedAt = new DateTime(ticks, DateTimeKind.Utc)
+                            });
+                        }
+                    }
+                    if (collection.Count > 0)
+                    {
+                        SaveOfflineIndex(collection);
+                        localSettings.Values.Remove(LegacyOfflineIndexKey);
                     }
                 }
             }
@@ -66,16 +98,25 @@ namespace WebSystemUwp.Services
             {
                 System.Diagnostics.Debug.WriteLine("LoadOfflinePages Error: " + ex.Message);
             }
-            return collection;
+            return Task.FromResult(collection);
         }
 
         private static void SaveOfflineIndex(IEnumerable<OfflinePageItem> list)
         {
             try
             {
-                var localSettings = ApplicationData.Current.LocalSettings;
-                var rawList = list.Select(p => $"{p.Id}^^^{p.Title}^^^{p.Url}^^^{p.SizeBytes}^^^{p.SavedAt.Ticks}");
-                localSettings.Values[OfflineIndexKey] = string.Join("|||", rawList);
+                var arr = new JsonArray();
+                foreach (var p in list)
+                {
+                    var obj = new JsonObject();
+                    obj.SetNamedValue("id", JsonValue.CreateStringValue(p.Id ?? string.Empty));
+                    obj.SetNamedValue("title", JsonValue.CreateStringValue(p.Title ?? string.Empty));
+                    obj.SetNamedValue("url", JsonValue.CreateStringValue(p.Url ?? string.Empty));
+                    obj.SetNamedValue("size", JsonValue.CreateStringValue(p.SizeBytes.ToString()));
+                    obj.SetNamedValue("ticks", JsonValue.CreateStringValue(p.SavedAt.Ticks.ToString()));
+                    arr.Add(obj);
+                }
+                File.WriteAllText(IndexFilePath, arr.Stringify());
             }
             catch (Exception ex)
             {

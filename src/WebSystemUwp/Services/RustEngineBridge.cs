@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.UI;
 
@@ -19,13 +22,16 @@ namespace WebSystemUwp.Services
 
     /// <summary>
     /// Cầu nối P/Invoke tới lõi trình duyệt Rust (websystem_core.dll).
-    /// Giai đoạn 0-2: Kiểm chứng runtime, HTTP/TLS 1.3 (rustls) và HTML/CSS Layout (html5ever + taffy).
+    /// Giai đoạn 0-4: HTTP/TLS 1.3 + Cookies (rustls), External CSS, HTML5/CSS Layout (WSR2), Forms &amp; Images.
     /// </summary>
     public static class RustEngineBridge
     {
         private const string NativeDllName = "websystem_core.dll";
         private const int DefaultBufferSize = 1024;
-        private const uint RenderMagicWsr1 = 0x57535231; // "WSR1"
+        private const int MaxExternalStylesheets = 4;
+        private const int MaxExternalCssBytes = 512 * 1024;
+        private const uint RenderMagicWsr2 = 0x57535232; // "WSR2"
+        private static readonly SemaphoreSlim HttpGate = new SemaphoreSlim(4, 4);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern uint ws_core_version();
@@ -41,16 +47,19 @@ namespace WebSystemUwp.Services
             UIntPtr outCap);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr ws_http_request(
+        private static extern IntPtr ws_http_request_v2(
             byte[] methodPtr,
             UIntPtr methodLen,
             byte[] urlPtr,
             UIntPtr urlLen,
             byte[] uaPtr,
             UIntPtr uaLen,
+            byte[] ctPtr,
+            UIntPtr ctLen,
             byte[] bodyPtr,
             UIntPtr bodyLen,
-            uint timeoutSecs);
+            uint timeoutSecs,
+            uint maxBodyBytes);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern int ws_http_response_status(IntPtr resp);
@@ -65,6 +74,9 @@ namespace WebSystemUwp.Services
         private static extern int ws_http_response_tls_info(IntPtr resp, byte[] outBuf, UIntPtr outCap);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int ws_http_response_final_url(IntPtr resp, byte[] outBuf, UIntPtr outCap);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern int ws_http_response_error(IntPtr resp, byte[] outBuf, UIntPtr outCap);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
@@ -77,13 +89,27 @@ namespace WebSystemUwp.Services
         private static extern void ws_http_response_free(IntPtr resp);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr ws_render_html(
+        private static extern int ws_extract_stylesheets(
             byte[] htmlPtr,
             UIntPtr htmlLen,
             byte[] baseUrlPtr,
             UIntPtr baseUrlLen,
+            byte[] outBuf,
+            UIntPtr outCap);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ws_render_html_v2(
+            byte[] htmlPtr,
+            UIntPtr htmlLen,
+            byte[] baseUrlPtr,
+            UIntPtr baseUrlLen,
+            byte[] extraCssPtr,
+            UIntPtr extraCssLen,
             float viewportWidth,
-            byte darkMode);
+            byte darkMode,
+            byte blockAds,
+            byte blockImages,
+            byte readerMode);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern UIntPtr ws_render_buffer_len(IntPtr buf);
@@ -170,19 +196,72 @@ namespace WebSystemUwp.Services
                    $"   • Smoke test: {status.SmokeTestResult}";
         }
 
-        public static Task<WebEngineResponse> SendHttpRequestAsync(WebEngineRequest request)
+        public static async Task<WebEngineResponse> SendHttpRequestAsync(WebEngineRequest request)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
-            return Task.Run(() => ExecuteHttpSync(request));
+            if (request.CancellationToken.IsCancellationRequested)
+            {
+                return new WebEngineResponse
+                {
+                    RequestId = request.RequestId,
+                    IsSuccess = false,
+                    ErrorType = WebEngineErrorType.Cancelled,
+                    ErrorMessage = "Yêu cầu đã bị hủy."
+                };
+            }
+
+            bool acquired = false;
+            try
+            {
+                await HttpGate.WaitAsync(request.CancellationToken);
+                acquired = true;
+                if (request.CancellationToken.IsCancellationRequested)
+                {
+                    return new WebEngineResponse
+                    {
+                        RequestId = request.RequestId,
+                        IsSuccess = false,
+                        ErrorType = WebEngineErrorType.Cancelled,
+                        ErrorMessage = "Yêu cầu đã bị hủy."
+                    };
+                }
+                return await Task.Run(() => ExecuteHttpSync(request));
+            }
+            catch (OperationCanceledException)
+            {
+                return new WebEngineResponse
+                {
+                    RequestId = request.RequestId,
+                    IsSuccess = false,
+                    ErrorType = WebEngineErrorType.Cancelled,
+                    ErrorMessage = "Yêu cầu đã bị hủy."
+                };
+            }
+            finally
+            {
+                if (acquired) HttpGate.Release();
+            }
         }
 
         public static Task<RustRenderPage> RenderHtmlAsync(
             string html,
             string baseUrl,
             float viewportWidth,
-            bool darkMode)
+            bool darkMode,
+            string extraCss = "",
+            bool blockAds = false,
+            bool blockImages = false,
+            bool readerMode = false)
         {
-            return Task.Run(() => RenderHtmlSync(html ?? string.Empty, baseUrl ?? string.Empty, viewportWidth, darkMode));
+            return Task.Run(() => RenderHtmlSync(
+                html ?? string.Empty,
+                baseUrl ?? string.Empty,
+                extraCss ?? string.Empty,
+                viewportWidth,
+                darkMode,
+                blockAds,
+                blockImages,
+                readerMode));
         }
 
         public static async Task<RustRenderPage> FetchAndRenderAsync(
@@ -190,18 +269,31 @@ namespace WebSystemUwp.Services
             string userAgent,
             float viewportWidth,
             bool darkMode,
-            int timeoutSecs = 20)
+            int timeoutSecs = 20,
+            bool blockAds = false,
+            bool blockImages = false,
+            bool readerMode = false,
+            string method = "GET",
+            string postBody = null,
+            string requestContentType = null,
+            CancellationToken ct = default(CancellationToken))
         {
             var httpResp = await SendHttpRequestAsync(new WebEngineRequest
             {
                 Url = url,
-                Method = "GET",
+                Method = string.IsNullOrWhiteSpace(method) ? "GET" : method,
+                Body = postBody,
+                ContentType = requestContentType ?? "application/x-www-form-urlencoded",
                 UserAgent = userAgent,
                 TimeoutSeconds = timeoutSecs,
-                UseRustTlsEngine = true
+                UseRustTlsEngine = true,
+                CancellationToken = ct
             });
 
+            string effectiveUrl = !string.IsNullOrWhiteSpace(httpResp.FinalUrl) ? httpResp.FinalUrl : url;
             string htmlToRender;
+            bool isHtml = false;
+
             if (httpResp.StatusCode <= 0)
             {
                 string safeUrl = WebUtility.HtmlEncode(url ?? "");
@@ -219,21 +311,135 @@ namespace WebSystemUwp.Services
             {
                 string safeText = WebUtility.HtmlEncode(httpResp.Body ?? string.Empty);
                 htmlToRender =
-                    $"<html><head><title>{WebUtility.HtmlEncode(url)}</title></head>" +
+                    $"<html><head><title>{WebUtility.HtmlEncode(effectiveUrl)}</title></head>" +
                     $"<body><h3>Nội dung ({WebUtility.HtmlEncode(httpResp.ContentType)})</h3>" +
                     $"<pre>{safeText}</pre></body></html>";
             }
             else
             {
                 htmlToRender = httpResp.Body ?? string.Empty;
+                isHtml = true;
             }
 
-            var page = await RenderHtmlAsync(htmlToRender, url, viewportWidth, darkMode);
-            page.Url = url;
+            string combinedCss = string.Empty;
+            int cssCount = 0;
+            if (isHtml && !readerMode && !string.IsNullOrEmpty(htmlToRender) && !ct.IsCancellationRequested)
+            {
+                var fetched = await FetchExternalStylesheetsAsync(htmlToRender, effectiveUrl, userAgent, blockAds, ct);
+                combinedCss = fetched.Item1;
+                cssCount = fetched.Item2;
+            }
+
+            var page = await RenderHtmlAsync(
+                htmlToRender,
+                effectiveUrl,
+                viewportWidth,
+                darkMode,
+                combinedCss,
+                blockAds,
+                blockImages,
+                readerMode);
+
+            page.Url = effectiveUrl;
             page.SourceHtml = htmlToRender;
+            page.CombinedCss = combinedCss;
+            page.ExternalCssCount = cssCount;
+            page.IsReaderMode = readerMode;
             page.TransportInfo = httpResp.TransportInfo;
             page.ElapsedMs = httpResp.ResponseTimeMs;
             return page;
+        }
+
+        private static async Task<Tuple<string, int>> FetchExternalStylesheetsAsync(
+            string html,
+            string baseUrl,
+            string userAgent,
+            bool blockAds,
+            CancellationToken ct)
+        {
+            try
+            {
+                var urls = ExtractStylesheetUrls(html, baseUrl);
+                if (blockAds)
+                {
+                    urls = urls.Where(u =>
+                        u.IndexOf("doubleclick", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        u.IndexOf("googlesyndication", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        u.IndexOf("cookie", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        u.IndexOf("onetrust", StringComparison.OrdinalIgnoreCase) < 0).ToList();
+                }
+
+                var targets = urls.Take(MaxExternalStylesheets).ToList();
+                if (targets.Count == 0)
+                {
+                    return Tuple.Create(string.Empty, 0);
+                }
+
+                var tasks = targets.Select(cssUrl => SendHttpRequestAsync(new WebEngineRequest
+                {
+                    Url = cssUrl,
+                    Method = "GET",
+                    UserAgent = userAgent,
+                    TimeoutSeconds = 6,
+                    MaxResponseBytes = MaxExternalCssBytes,
+                    UseRustTlsEngine = true,
+                    CancellationToken = ct
+                })).ToArray();
+
+                var responses = await Task.WhenAll(tasks);
+                var sb = new StringBuilder();
+                int loaded = 0;
+                foreach (var resp in responses)
+                {
+                    if (resp != null && resp.IsSuccess && !string.IsNullOrEmpty(resp.Body))
+                    {
+                        sb.AppendLine(resp.Body);
+                        loaded++;
+                    }
+                }
+                return Tuple.Create(sb.ToString(), loaded);
+            }
+            catch
+            {
+                return Tuple.Create(string.Empty, 0);
+            }
+        }
+
+        private static List<string> ExtractStylesheetUrls(string html, string baseUrl)
+        {
+            var list = new List<string>();
+            try
+            {
+                byte[] htmlBytes = Encoding.UTF8.GetBytes(html ?? string.Empty);
+                byte[] urlBytes = Encoding.UTF8.GetBytes(baseUrl ?? string.Empty);
+                var outBuf = new byte[8192];
+                int written = ws_extract_stylesheets(
+                    htmlBytes, (UIntPtr)htmlBytes.Length,
+                    urlBytes, (UIntPtr)urlBytes.Length,
+                    outBuf, (UIntPtr)outBuf.Length);
+
+                if (written > 0)
+                {
+                    int safeLen = Math.Min(written, outBuf.Length);
+                    string joined = Encoding.UTF8.GetString(outBuf, 0, safeLen);
+                    // Drop potentially truncated last line if buffer filled up
+                    if (safeLen >= outBuf.Length - 4)
+                    {
+                        int lastNl = joined.LastIndexOf('\n');
+                        if (lastNl > 0) joined = joined.Substring(0, lastNl);
+                    }
+                    foreach (var line in joined.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string u = line.Trim();
+                        if (!string.IsNullOrEmpty(u))
+                        {
+                            list.Add(u);
+                        }
+                    }
+                }
+            }
+            catch { }
+            return list;
         }
 
         private static WebEngineResponse ExecuteHttpSync(WebEngineRequest request)
@@ -256,6 +462,9 @@ namespace WebSystemUwp.Services
             byte[] uaBytes = string.IsNullOrWhiteSpace(request.UserAgent)
                 ? new byte[0]
                 : Encoding.UTF8.GetBytes(request.UserAgent);
+            byte[] ctBytes = string.IsNullOrWhiteSpace(request.ContentType)
+                ? new byte[0]
+                : Encoding.UTF8.GetBytes(request.ContentType);
             byte[] bodyBytes = string.IsNullOrEmpty(request.Body)
                 ? new byte[0]
                 : Encoding.UTF8.GetBytes(request.Body);
@@ -263,18 +472,20 @@ namespace WebSystemUwp.Services
             IntPtr handle = IntPtr.Zero;
             try
             {
-                handle = ws_http_request(
+                handle = ws_http_request_v2(
                     methodBytes, (UIntPtr)methodBytes.Length,
                     urlBytes, (UIntPtr)urlBytes.Length,
                     uaBytes, (UIntPtr)uaBytes.Length,
+                    ctBytes, (UIntPtr)ctBytes.Length,
                     bodyBytes, (UIntPtr)bodyBytes.Length,
-                    (uint)Math.Max(5, request.TimeoutSeconds));
+                    (uint)Math.Max(5, request.TimeoutSeconds),
+                    (uint)Math.Max(0, request.MaxResponseBytes));
 
                 if (handle == IntPtr.Zero)
                 {
                     result.IsSuccess = false;
                     result.ErrorType = WebEngineErrorType.Unknown;
-                    result.ErrorMessage = "ws_http_request trả về handle rỗng.";
+                    result.ErrorMessage = "ws_http_request_v2 trả về handle rỗng.";
                     return result;
                 }
 
@@ -282,11 +493,13 @@ namespace WebSystemUwp.Services
                 ulong elapsed = ws_http_response_elapsed_ms(handle);
                 string contentType = ReadOptionalUtf8Buffer((buf, cap) => ws_http_response_content_type(handle, buf, cap));
                 string tlsInfo = ReadOptionalUtf8Buffer((buf, cap) => ws_http_response_tls_info(handle, buf, cap));
+                string finalUrl = ReadOptionalUtf8Buffer((buf, cap) => ws_http_response_final_url(handle, buf, cap));
                 string errMsg = ReadOptionalUtf8Buffer((buf, cap) => ws_http_response_error(handle, buf, cap));
 
                 result.StatusCode = status;
                 result.ResponseTimeMs = (long)elapsed;
                 result.ContentType = contentType;
+                result.FinalUrl = string.IsNullOrEmpty(finalUrl) ? request.Url : finalUrl;
                 result.TransportInfo = string.IsNullOrEmpty(tlsInfo) ? "rustls" : tlsInfo;
 
                 if (status > 0 && string.IsNullOrEmpty(errMsg))
@@ -300,7 +513,7 @@ namespace WebSystemUwp.Services
                         {
                             result.RawBytes = raw;
                             result.ContentLength = copied;
-                            result.Body = Encoding.UTF8.GetString(raw, 0, Math.Min(copied, raw.Length));
+                            result.Body = DecodeTextBody(raw, copied, contentType);
                         }
                     }
                     else
@@ -343,19 +556,67 @@ namespace WebSystemUwp.Services
             }
         }
 
-        private static RustRenderPage RenderHtmlSync(string html, string baseUrl, float viewportWidth, bool darkMode)
+        private static string DecodeTextBody(byte[] raw, int count, string contentType)
+        {
+            if (raw == null || count <= 0) return string.Empty;
+            if (!string.IsNullOrEmpty(contentType) &&
+                (contentType.IndexOf("image/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 contentType.IndexOf("octet-stream", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return string.Empty;
+            }
+
+            if (!string.IsNullOrEmpty(contentType))
+            {
+                int idx = contentType.IndexOf("charset=", StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    string cs = contentType.Substring(idx + 8).Trim().Trim('"', '\'');
+                    int semi = cs.IndexOf(';');
+                    if (semi >= 0) cs = cs.Substring(0, semi).Trim();
+                    if (!string.IsNullOrEmpty(cs) &&
+                        !cs.Equals("utf-8", StringComparison.OrdinalIgnoreCase) &&
+                        !cs.Equals("utf8", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            var enc = Encoding.GetEncoding(cs);
+                            return enc.GetString(raw, 0, count);
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            return Encoding.UTF8.GetString(raw, 0, Math.Min(count, raw.Length));
+        }
+
+        private static RustRenderPage RenderHtmlSync(
+            string html,
+            string baseUrl,
+            string extraCss,
+            float viewportWidth,
+            bool darkMode,
+            bool blockAds,
+            bool blockImages,
+            bool readerMode)
         {
             byte[] htmlBytes = Encoding.UTF8.GetBytes(html);
             byte[] urlBytes = Encoding.UTF8.GetBytes(baseUrl);
+            byte[] cssBytes = string.IsNullOrEmpty(extraCss) ? new byte[0] : Encoding.UTF8.GetBytes(extraCss);
             IntPtr bufHandle = IntPtr.Zero;
 
             try
             {
-                bufHandle = ws_render_html(
+                bufHandle = ws_render_html_v2(
                     htmlBytes, (UIntPtr)htmlBytes.Length,
                     urlBytes, (UIntPtr)urlBytes.Length,
+                    cssBytes, (UIntPtr)cssBytes.Length,
                     viewportWidth,
-                    darkMode ? (byte)1 : (byte)0);
+                    darkMode ? (byte)1 : (byte)0,
+                    blockAds ? (byte)1 : (byte)0,
+                    blockImages ? (byte)1 : (byte)0,
+                    readerMode ? (byte)1 : (byte)0);
 
                 if (bufHandle == IntPtr.Zero)
                 {
@@ -393,7 +654,7 @@ namespace WebSystemUwp.Services
             using (var reader = new BinaryReader(ms, Encoding.UTF8))
             {
                 uint magic = reader.ReadUInt32();
-                if (magic != RenderMagicWsr1)
+                if (magic != RenderMagicWsr2)
                 {
                     page.Title = baseUrl;
                     return page;
@@ -416,15 +677,20 @@ namespace WebSystemUwp.Services
                     uint fg = reader.ReadUInt32();
                     uint bg = reader.ReadUInt32();
                     uint border = reader.ReadUInt32();
+                    int formId = reader.ReadInt32();
                     string text = ReadLengthPrefixedUtf8(reader);
                     string href = ReadLengthPrefixedUtf8(reader);
+                    string extra = ReadLengthPrefixedUtf8(reader);
 
-                    page.Items.Add(new RenderDisplayItem
+                    var item = new RenderDisplayItem
                     {
                         Kind = (RenderItemKind)kind,
                         Bold = (flags & 1) != 0,
                         Italic = (flags & 2) != 0,
                         Underline = (flags & 4) != 0,
+                        IsPassword = (flags & 8) != 0,
+                        IsMultiline = (flags & 16) != 0,
+                        CenterText = (flags & 32) != 0,
                         X = x,
                         Y = y,
                         Width = w,
@@ -433,9 +699,20 @@ namespace WebSystemUwp.Services
                         ForegroundColor = ArgbToColor(fg),
                         BackgroundColor = ArgbToColor(bg),
                         BorderColor = ArgbToColor(border),
+                        FormId = formId,
                         Text = text,
-                        Href = href
-                    });
+                        Href = href,
+                        Extra = extra
+                    };
+
+                    if (item.Kind == RenderItemKind.Hidden)
+                    {
+                        page.HiddenInputs.Add(item);
+                    }
+                    else
+                    {
+                        page.Items.Add(item);
+                    }
                 }
             }
 
