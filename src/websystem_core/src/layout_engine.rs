@@ -1343,7 +1343,7 @@ impl<'a> BuildState<'a> {
         if tag == "textarea" {
             let name = el.attr("name").unwrap_or("").trim().to_string();
             let placeholder = el.attr("placeholder").unwrap_or("").trim().to_string();
-            let value = collapse_whitespace(&el.text().collect::<String>());
+            let value = collapse_whitespace(&el_ref.text().collect::<String>());
             let (fid, action_method) = match form_ctx {
                 Some(fc) => (fc.form_id, format!("{}|{}", fc.action, fc.method)),
                 None => (-1, format!("{}|GET", self.base_url)),
