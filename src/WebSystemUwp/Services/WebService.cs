@@ -34,6 +34,7 @@ namespace WebSystemUwp.Services
         public string ContentType { get; set; } = "application/json";
         public int TimeoutSeconds { get; set; } = 20;
         public string UserAgent { get; set; }
+        public bool UseRustTlsEngine { get; set; } = true;
         public CancellationToken CancellationToken { get; set; } = CancellationToken.None;
     }
 
@@ -43,6 +44,7 @@ namespace WebSystemUwp.Services
         public bool IsSuccess { get; set; }
         public int StatusCode { get; set; }
         public string StatusText { get; set; }
+        public string TransportInfo { get; set; }
         public Dictionary<string, string> Headers { get; set; } = new Dictionary<string, string>();
         public string ContentType { get; set; }
         public long ContentLength { get; set; }
@@ -96,9 +98,15 @@ namespace WebSystemUwp.Services
                 };
             }
 
+            if (request.UseRustTlsEngine && (request.Headers == null || request.Headers.Count == 0) && RustEngineBridge.IsAvailable)
+            {
+                return await RustEngineBridge.SendHttpRequestAsync(request);
+            }
+
             var responseResult = new WebEngineResponse
             {
-                RequestId = request.RequestId
+                RequestId = request.RequestId,
+                TransportInfo = "HttpClient (Schannel)"
             };
 
             var sw = Stopwatch.StartNew();

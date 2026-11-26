@@ -26,6 +26,16 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Setup Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Build Rust Core (websystem_core.dll)
+        shell: pwsh
+        run: |
+          & (Join-Path $env:GITHUB_WORKSPACE 'scripts\build-rust-core.ps1') -Platform ${{ matrix.arch }} -Configuration Release
+
       - name: Ensure Assets Exist
         shell: pwsh
         run: |

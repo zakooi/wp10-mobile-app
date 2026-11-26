@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml"
     mc:Ignorable="d">
 
     <Grid Background="#121212">
@@ -93,6 +94,7 @@
                             <MenuFlyoutItem Text="📤 Chia Sẻ Trang Web" Click="ShareCurrentPage_Click" />
                             <MenuFlyoutItem Text="📋 Sao Chép Liên Kết" Click="CopyCurrentUrl_Click" />
                             <MenuFlyoutSeparator />
+                            <ToggleMenuFlyoutItem x:Name="MenuToggleRustEngine" Text="🦀 Trình duyệt Rust Engine (TLS 1.3)" IsChecked="true" Click="MenuToggleRustEngine_Click" />
                             <ToggleMenuFlyoutItem x:Name="MenuToggleAdBlock" Text="🛡️ Chặn quảng cáo (Turbo)" IsChecked="true" Click="MenuToggleAdBlock_Click" />
                             <ToggleMenuFlyoutItem x:Name="MenuTogglePolyfills" Text="💉 Tiêm JS Polyfills ES6+" IsChecked="true" Click="MenuTogglePolyfills_Click" />
                             <ToggleMenuFlyoutItem x:Name="MenuToggleImgBlock" Text="🖼️ Chặn hình ảnh (Tiết kiệm Data)" IsChecked="false" Click="MenuToggleImgBlock_Click" />
@@ -282,7 +284,7 @@
                 </StackPanel>
             </ScrollViewer>
 
-            <!-- Real WebView Browser Control -->
+            <!-- Real WebView Browser Control (Legacy Fallback) -->
             <WebView x:Name="BrowserWebView"
                      NavigationStarting="BrowserWebView_NavigationStarting"
                      ContentLoading="BrowserWebView_ContentLoading"
@@ -290,6 +292,24 @@
                      NavigationCompleted="BrowserWebView_NavigationCompleted"
                      NewWindowRequested="BrowserWebView_NewWindowRequested"
                      Tapped="BrowserWebView_Tapped" />
+
+            <!-- Rust Native Engine Viewport (Win2D Direct2D Virtualized Renderer) -->
+            <ScrollViewer x:Name="RustBrowserScrollViewer"
+                          HorizontalScrollMode="Disabled"
+                          VerticalScrollMode="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          Background="#121212"
+                          Visibility="Collapsed"
+                          ViewChanged="RustBrowserScrollViewer_ViewChanged">
+                <canvas:CanvasVirtualControl x:Name="RustVirtualCanvas"
+                                             HorizontalAlignment="Left"
+                                             VerticalAlignment="Top"
+                                             Width="380"
+                                             Height="800"
+                                             ClearColor="#121212"
+                                             RegionsInvalidated="RustVirtualCanvas_RegionsInvalidated"
+                                             Tapped="RustVirtualCanvas_Tapped" />
+            </ScrollViewer>
 
             <!-- ==================== FLOATING CHEVRON BUTTON (REVEAL BOTTOM BAR) ==================== -->
             <Button x:Name="FloatingRevealNavButton"
@@ -536,6 +556,8 @@
                                             <TextBox x:Name="ToolsApiUrlBox" Grid.Column="1" Text="https://httpbin.org/get" Margin="0,0,6,0" />
                                             <Button Content="Gửi" Click="ToolsSendApi_Click" Background="#8AB4F8" Foreground="#121212" FontWeight="Bold" />
                                         </Grid>
+
+                                        <CheckBox x:Name="ToolsUseRustTlsCheck" Content="Dùng Rust TLS 1.3 (rustls + WebPKI)" IsChecked="True" Foreground="#E0E0E0" FontSize="12" Margin="0,0,0,6" />
 
                                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                                             <Button Content="🌐 Test Ping Mạng" Click="ToolsTestPing_Click" Background="#2E2E2E" Margin="0,0,8,0" />

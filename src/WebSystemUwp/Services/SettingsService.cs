@@ -52,6 +52,12 @@ namespace WebSystemUwp.Services
             set => SetValue("DarkModeDefault", value);
         }
 
+        public static bool UseRustBrowserEngine
+        {
+            get => GetValue("UseRustBrowserEngine", true);
+            set => SetValue("UseRustBrowserEngine", value);
+        }
+
         public static string GetSearchUrl(string query)
         {
             string engine = SearchEngine;

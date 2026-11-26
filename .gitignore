@@ -4,6 +4,8 @@ obj/
 AppPackages/
 BundleArtifacts/
 Generated Files/
+src/websystem_core/target/
+src/WebSystemUwp/Native/
 *.appx
 *.appxbundle
 *.msix

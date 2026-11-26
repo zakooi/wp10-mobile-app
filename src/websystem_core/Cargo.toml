@@ -1,0 +1,25 @@
+[package]
+name = "websystem_core"
+version = "0.3.0"
+edition = "2021"
+description = "Native Rust browser core for WebSystemUwp (Windows 10 Mobile)"
+
+[lib]
+name = "websystem_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "logging", "webpki"] }
+rustls-rustcrypto = "0.0.2-alpha"
+scraper = "0.23"
+taffy = "0.9"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

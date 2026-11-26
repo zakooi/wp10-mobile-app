@@ -101,6 +101,14 @@
     <Compile Include="Services\DeviceService.cs" />
     <Compile Include="Services\DiagnosticsService.cs" />
     <Compile Include="Services\SettingsService.cs" />
+    <Compile Include="Services\RustEngineBridge.cs" />
+    <Compile Include="Services\RustRenderModels.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Native\$(Platform)\websystem_core.dll" Condition="Exists('Native\$(Platform)\websystem_core.dll')">
+      <Link>websystem_core.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
@@ -127,6 +135,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.NETCore.UniversalWindowsPlatform">
       <Version>6.2.14</Version>
+    </PackageReference>
+    <PackageReference Include="Win2D.uwp">
+      <Version>1.27.1</Version>
     </PackageReference>
   </ItemGroup>
   <PropertyGroup Condition=" '$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '14.0' ">

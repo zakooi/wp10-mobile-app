@@ -1,9 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Microsoft.Graphics.Canvas.Text;
+using Microsoft.Graphics.Canvas.UI.Xaml;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Foundation;
 using Windows.System;
 using Windows.UI;
+using Windows.UI.Text;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Input;
@@ -17,6 +22,9 @@ namespace WebSystemUwp
         public string Id { get; set; }
         public string Title { get; set; }
         public string Url { get; set; }
+        public Stack<string> BackStack { get; } = new Stack<string>();
+        public Stack<string> ForwardStack { get; } = new Stack<string>();
+        public RustRenderPage RenderedPage { get; set; }
     }
 
     public sealed partial class MainPage : Page
@@ -34,12 +42,18 @@ namespace WebSystemUwp
         private int _currentZoom = 100;
 
         private DispatcherTimer _autoHideNavTimer;
+        private RustRenderPage _activeRustPage;
+        private ulong _rustNavSeq;
+        private readonly Dictionary<int, CanvasTextFormat> _textFormats = new Dictionary<int, CanvasTextFormat>();
+
+        private bool IsRustEngineActive => MenuToggleRustEngine.IsChecked && RustEngineBridge.IsAvailable;
 
         public MainPage()
         {
             InitializeComponent();
             TabListView.ItemsSource = _tabs;
             Loaded += MainPage_Loaded;
+            Unloaded += MainPage_Unloaded;
 
             // Timer tự động ẩn thanh điều hướng dưới để tối ưu màn hình Lumia
             _autoHideNavTimer = new DispatcherTimer
@@ -47,6 +61,15 @@ namespace WebSystemUwp
                 Interval = TimeSpan.FromSeconds(3)
             };
             _autoHideNavTimer.Tick += AutoHideNavTimer_Tick;
+        }
+
+        private void MainPage_Unloaded(object sender, RoutedEventArgs e)
+        {
+            foreach (var fmt in _textFormats.Values)
+            {
+                fmt.Dispose();
+            }
+            _textFormats.Clear();
         }
 
         private async void MainPage_Loaded(object sender, RoutedEventArgs e)
@@ -73,6 +96,7 @@ namespace WebSystemUwp
         {
             try
             {
+                MenuToggleRustEngine.IsChecked = SettingsService.UseRustBrowserEngine && RustEngineBridge.IsAvailable;
                 MenuToggleAdBlock.IsChecked = SettingsService.AutoBlockAds;
                 MenuToggleImgBlock.IsChecked = SettingsService.AutoBlockImages;
                 MenuTogglePolyfills.IsChecked = SettingsService.AutoInjectPolyfills;
@@ -122,16 +146,29 @@ namespace WebSystemUwp
             {
                 NewTabHomeView.Visibility = Visibility.Visible;
                 BrowserWebView.Visibility = Visibility.Collapsed;
+                RustBrowserScrollViewer.Visibility = Visibility.Collapsed;
                 OmniUrlBox.Text = "";
                 OmniLockIcon.Text = "\uE721"; // Search Icon
                 UpdateBookmarkStarStatus("");
+                UpdateNavButtons();
+                ShowBottomNavBar();
+            }
+            else if (IsRustEngineActive && tab.RenderedPage != null && string.Equals(tab.RenderedPage.Url, tab.Url, StringComparison.OrdinalIgnoreCase))
+            {
+                NewTabHomeView.Visibility = Visibility.Collapsed;
+                BrowserWebView.Visibility = Visibility.Collapsed;
+                RustBrowserScrollViewer.Visibility = Visibility.Visible;
+                OmniLockIcon.Text = tab.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? "\uE72E" : "\uE7BA";
+                UpdateBookmarkStarStatus(tab.Url);
+                UpdateOmniboxDisplay();
+                DisplayRustPage(tab.RenderedPage);
+                UpdateNavButtons();
                 ShowBottomNavBar();
             }
             else
             {
                 NewTabHomeView.Visibility = Visibility.Collapsed;
-                BrowserWebView.Visibility = Visibility.Visible;
-                NavigateBrowser(tab.Url);
+                NavigateBrowser(tab.Url, pushHistory: false);
             }
 
             TabSwitcherOverlay.Visibility = Visibility.Collapsed;
@@ -202,7 +239,7 @@ namespace WebSystemUwp
         // 2. CHROME OMNIBOX & ĐIỀU HƯỚNG
         // =========================================================================
 
-        private void NavigateBrowser(string input)
+        private void NavigateBrowser(string input, bool pushHistory = true)
         {
             if (string.IsNullOrWhiteSpace(input))
                 return;
@@ -224,9 +261,47 @@ namespace WebSystemUwp
                 }
             }
 
+            if (targetUrl.Equals(NewTabHomeUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_activeTab != null)
+                {
+                    _activeTab.Url = NewTabHomeUrl;
+                    SwitchToTab(_activeTab);
+                }
+                return;
+            }
+
             NewTabHomeView.Visibility = Visibility.Collapsed;
-            BrowserWebView.Visibility = Visibility.Visible;
             ShowBottomNavBar();
+
+            if (IsRustEngineActive)
+            {
+                if (pushHistory && _activeTab != null &&
+                    !string.IsNullOrWhiteSpace(_activeTab.Url) &&
+                    _activeTab.Url != NewTabHomeUrl &&
+                    !_activeTab.Url.Equals(targetUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    _activeTab.BackStack.Push(_activeTab.Url);
+                    _activeTab.ForwardStack.Clear();
+                }
+
+                BrowserWebView.Visibility = Visibility.Collapsed;
+                RustBrowserScrollViewer.Visibility = Visibility.Visible;
+                OmniUrlBox.Text = targetUrl;
+                OmniLockIcon.Text = targetUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? "\uE72E" : "\uE7BA";
+
+                if (_activeTab != null)
+                {
+                    _activeTab.Url = targetUrl;
+                }
+
+                UpdateBookmarkStarStatus(targetUrl);
+                LoadUrlWithRustEngineAsync(targetUrl);
+                return;
+            }
+
+            RustBrowserScrollViewer.Visibility = Visibility.Collapsed;
+            BrowserWebView.Visibility = Visibility.Visible;
 
             OmniUrlBox.Text = targetUrl;
             if (_activeTab != null)
@@ -243,6 +318,207 @@ namespace WebSystemUwp
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("Navigate error: " + ex.Message);
+            }
+        }
+
+        private float GetRustViewportWidth()
+        {
+            double width = RustBrowserScrollViewer.ViewportWidth;
+            if (width <= 100) width = RustBrowserScrollViewer.ActualWidth;
+            if (width <= 100) width = Window.Current.Bounds.Width;
+            if (width <= 100) width = 380;
+            float scale = Math.Max(0.5f, _currentZoom / 100.0f);
+            return (float)Math.Max(220, width / scale);
+        }
+
+        private async void LoadUrlWithRustEngineAsync(string targetUrl)
+        {
+            ulong seq = ++_rustNavSeq;
+            BrowserProgressBar.Visibility = Visibility.Visible;
+            BrowserProgressBar.IsIndeterminate = true;
+
+            try
+            {
+                string ua = EngineOptimizer.UserAgents.TryGetValue(_currentUa, out var profileUa)
+                    ? profileUa
+                    : null;
+                float viewportWidth = GetRustViewportWidth();
+                bool darkMode = MenuToggleDarkMode.IsChecked;
+
+                var page = await RustEngineBridge.FetchAndRenderAsync(targetUrl, ua, viewportWidth, darkMode, 20);
+                if (seq != _rustNavSeq) return;
+
+                if (_activeTab != null)
+                {
+                    _activeTab.RenderedPage = page;
+                    _activeTab.Title = string.IsNullOrWhiteSpace(page.Title) ? targetUrl : page.Title;
+                    _activeTab.Url = targetUrl;
+                }
+
+                HistoryService.RecordVisit(_history, _activeTab?.Title ?? targetUrl, targetUrl);
+                DisplayRustPage(page);
+                UpdateOmniboxDisplay();
+                UpdateNavButtons();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("Rust render error: " + ex.Message);
+            }
+            finally
+            {
+                if (seq == _rustNavSeq)
+                {
+                    BrowserProgressBar.Visibility = Visibility.Collapsed;
+                    BrowserProgressBar.IsIndeterminate = false;
+                    if (SettingsService.AutoHideBottomBar)
+                    {
+                        _autoHideNavTimer.Start();
+                    }
+                }
+            }
+        }
+
+        private void DisplayRustPage(RustRenderPage page)
+        {
+            _activeRustPage = page;
+            bool dark = MenuToggleDarkMode.IsChecked;
+            Color clear = dark ? Color.FromArgb(255, 18, 18, 18) : Color.FromArgb(255, 250, 250, 250);
+            RustBrowserScrollViewer.Background = new SolidColorBrush(clear);
+            RustVirtualCanvas.ClearColor = clear;
+
+            float scale = Math.Max(0.5f, _currentZoom / 100.0f);
+            RustVirtualCanvas.Width = Math.Max(280, page.ContentWidth * scale);
+            RustVirtualCanvas.Height = Math.Max(400, page.ContentHeight * scale);
+            RustBrowserScrollViewer.ChangeView(0, 0, null, true);
+            RustVirtualCanvas.Invalidate();
+        }
+
+        private CanvasTextFormat GetCachedTextFormat(float fontSize, bool bold, bool italic)
+        {
+            int sizeKey = (int)Math.Round(fontSize * 10);
+            int key = (sizeKey << 2) | (bold ? 1 : 0) | (italic ? 2 : 0);
+
+            if (!_textFormats.TryGetValue(key, out var fmt))
+            {
+                fmt = new CanvasTextFormat
+                {
+                    FontFamily = "Segoe UI",
+                    FontSize = Math.Max(10f, fontSize),
+                    FontWeight = bold ? FontWeights.Bold : FontWeights.Normal,
+                    FontStyle = italic ? FontStyle.Italic : FontStyle.Normal,
+                    WordWrapping = CanvasWordWrapping.Wrap
+                };
+                _textFormats[key] = fmt;
+            }
+            return fmt;
+        }
+
+        private void RustVirtualCanvas_RegionsInvalidated(CanvasVirtualControl sender, CanvasRegionsInvalidatedEventArgs args)
+        {
+            if (_activeRustPage == null) return;
+            float scale = Math.Max(0.5f, _currentZoom / 100.0f);
+
+            foreach (var region in args.InvalidatedRegions)
+            {
+                using (var ds = sender.CreateDrawingSession(region))
+                {
+                    foreach (var item in _activeRustPage.Items)
+                    {
+                        float x = item.X * scale;
+                        float y = item.Y * scale;
+                        float w = item.Width * scale;
+                        float h = item.Height * scale;
+
+                        if (x + w < region.Left ||
+                            x > region.Right ||
+                            y + h < region.Top ||
+                            y > region.Bottom)
+                        {
+                            continue;
+                        }
+
+                        var rect = new Rect(x, y, w, h);
+                        if (item.Kind == RenderItemKind.Box || item.Kind == RenderItemKind.Divider)
+                        {
+                            if (item.BackgroundColor.A > 0)
+                            {
+                                ds.FillRectangle(rect, item.BackgroundColor);
+                            }
+                            if (item.BorderColor.A > 0)
+                            {
+                                ds.DrawRectangle(rect, item.BorderColor, 1.0f);
+                            }
+                        }
+                        else if ((item.Kind == RenderItemKind.Text || item.Kind == RenderItemKind.Link) &&
+                                 !string.IsNullOrEmpty(item.Text))
+                        {
+                            if (item.BackgroundColor.A > 0)
+                            {
+                                ds.FillRectangle(rect, item.BackgroundColor);
+                            }
+                            if (item.BorderColor.A > 0)
+                            {
+                                ds.DrawRectangle(rect, item.BorderColor, 1.0f);
+                            }
+
+                            var fmt = GetCachedTextFormat(item.FontSize * scale, item.Bold, item.Italic);
+                            var textBounds = new Rect(x, y, w + 4, h + 4);
+                            ds.DrawText(item.Text, textBounds, item.ForegroundColor, fmt);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void RustVirtualCanvas_Tapped(object sender, TappedRoutedEventArgs e)
+        {
+            if (_activeRustPage != null)
+            {
+                float scale = Math.Max(0.5f, _currentZoom / 100.0f);
+                Point pos = e.GetPosition(RustVirtualCanvas);
+                double logicalX = pos.X / scale;
+                double logicalY = pos.Y / scale;
+
+                for (int i = _activeRustPage.Items.Count - 1; i >= 0; i--)
+                {
+                    var item = _activeRustPage.Items[i];
+                    if (item.Kind == RenderItemKind.Link &&
+                        !string.IsNullOrEmpty(item.Href) &&
+                        logicalX >= item.X && logicalX <= item.X + item.Width &&
+                        logicalY >= item.Y && logicalY <= item.Y + item.Height)
+                    {
+                        if (!item.Href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) &&
+                            !item.Href.StartsWith("#"))
+                        {
+                            NavigateBrowser(item.Href);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            ShowBottomNavBar();
+        }
+
+        private void RustBrowserScrollViewer_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+        {
+            if (!e.IsIntermediate && SettingsService.AutoHideBottomBar)
+            {
+                _autoHideNavTimer.Start();
+            }
+        }
+
+        private void UpdateNavButtons()
+        {
+            if (IsRustEngineActive && _activeTab != null)
+            {
+                BottomBackButton.IsEnabled = _activeTab.BackStack.Count > 0 || _activeTab.Url != NewTabHomeUrl;
+                BottomForwardButton.IsEnabled = _activeTab.ForwardStack.Count > 0;
+            }
+            else
+            {
+                BottomBackButton.IsEnabled = BrowserWebView.CanGoBack;
+                BottomForwardButton.IsEnabled = BrowserWebView.CanGoForward;
             }
         }
 
@@ -314,12 +590,33 @@ namespace WebSystemUwp
 
         private void OmniBackButton_Click(object sender, RoutedEventArgs e)
         {
+            if (IsRustEngineActive && _activeTab != null)
+            {
+                if (_activeTab.BackStack.Count > 0)
+                {
+                    if (!string.IsNullOrEmpty(_activeTab.Url) && _activeTab.Url != NewTabHomeUrl)
+                    {
+                        _activeTab.ForwardStack.Push(_activeTab.Url);
+                    }
+                    string prevUrl = _activeTab.BackStack.Pop();
+                    NavigateBrowser(prevUrl, pushHistory: false);
+                }
+                else
+                {
+                    _activeTab.Url = NewTabHomeUrl;
+                    SwitchToTab(_activeTab);
+                }
+                ShowBottomNavBar();
+                return;
+            }
+
             if (BrowserWebView.CanGoBack)
             {
                 BrowserWebView.GoBack();
             }
-            else
+            else if (_activeTab != null)
             {
+                _activeTab.Url = NewTabHomeUrl;
                 SwitchToTab(_activeTab);
             }
             ShowBottomNavBar();
@@ -327,6 +624,21 @@ namespace WebSystemUwp
 
         private void OmniForwardButton_Click(object sender, RoutedEventArgs e)
         {
+            if (IsRustEngineActive && _activeTab != null)
+            {
+                if (_activeTab.ForwardStack.Count > 0)
+                {
+                    if (!string.IsNullOrEmpty(_activeTab.Url) && _activeTab.Url != NewTabHomeUrl)
+                    {
+                        _activeTab.BackStack.Push(_activeTab.Url);
+                    }
+                    string nextUrl = _activeTab.ForwardStack.Pop();
+                    NavigateBrowser(nextUrl, pushHistory: false);
+                }
+                ShowBottomNavBar();
+                return;
+            }
+
             if (BrowserWebView.CanGoForward)
             {
                 BrowserWebView.GoForward();
@@ -336,7 +648,14 @@ namespace WebSystemUwp
 
         private void OmniRefreshButton_Click(object sender, RoutedEventArgs e)
         {
-            BrowserWebView.Refresh();
+            if (IsRustEngineActive && _activeTab != null && _activeTab.Url != NewTabHomeUrl)
+            {
+                NavigateBrowser(_activeTab.Url, pushHistory: false);
+            }
+            else
+            {
+                BrowserWebView.Refresh();
+            }
             ShowBottomNavBar();
         }
 
@@ -367,7 +686,9 @@ namespace WebSystemUwp
             FloatingRevealNavButton.Visibility = Visibility.Collapsed;
             _autoHideNavTimer.Stop();
 
-            if (SettingsService.AutoHideBottomBar && BrowserWebView.Visibility == Visibility.Visible)
+            bool isViewingPage = BrowserWebView.Visibility == Visibility.Visible ||
+                                 RustBrowserScrollViewer.Visibility == Visibility.Visible;
+            if (SettingsService.AutoHideBottomBar && isViewingPage)
             {
                 _autoHideNavTimer.Start();
             }
@@ -375,7 +696,9 @@ namespace WebSystemUwp
 
         private void HideBottomNavBar()
         {
-            if (SettingsService.AutoHideBottomBar && BrowserWebView.Visibility == Visibility.Visible)
+            bool isViewingPage = BrowserWebView.Visibility == Visibility.Visible ||
+                                 RustBrowserScrollViewer.Visibility == Visibility.Visible;
+            if (SettingsService.AutoHideBottomBar && isViewingPage)
             {
                 BottomNavBar.Visibility = Visibility.Collapsed;
                 FloatingRevealNavButton.Visibility = Visibility.Visible;
@@ -527,7 +850,10 @@ namespace WebSystemUwp
 
             try
             {
-                string html = await BrowserWebView.InvokeScriptAsync("eval", new[] { "document.documentElement.outerHTML;" });
+                string html = IsRustEngineActive && _activeTab.RenderedPage != null
+                    ? _activeTab.RenderedPage.SourceHtml
+                    : await BrowserWebView.InvokeScriptAsync("eval", new[] { "document.documentElement.outerHTML;" });
+
                 if (!string.IsNullOrWhiteSpace(html))
                 {
                     var saved = await CacheService.SavePageOfflineAsync(_activeTab.Title, _activeTab.Url, html);
@@ -561,9 +887,28 @@ namespace WebSystemUwp
                 if (!string.IsNullOrEmpty(html))
                 {
                     NewTabHomeView.Visibility = Visibility.Collapsed;
-                    BrowserWebView.Visibility = Visibility.Visible;
                     OmniUrlBox.Text = "offline://" + item.Title;
-                    BrowserWebView.NavigateToString(html);
+                    if (_activeTab != null)
+                    {
+                        _activeTab.Title = item.Title;
+                        _activeTab.Url = item.Url;
+                    }
+
+                    if (IsRustEngineActive)
+                    {
+                        BrowserWebView.Visibility = Visibility.Collapsed;
+                        RustBrowserScrollViewer.Visibility = Visibility.Visible;
+                        var page = await RustEngineBridge.RenderHtmlAsync(html, item.Url, GetRustViewportWidth(), MenuToggleDarkMode.IsChecked);
+                        page.SourceHtml = html;
+                        if (_activeTab != null) _activeTab.RenderedPage = page;
+                        DisplayRustPage(page);
+                    }
+                    else
+                    {
+                        RustBrowserScrollViewer.Visibility = Visibility.Collapsed;
+                        BrowserWebView.Visibility = Visibility.Visible;
+                        BrowserWebView.NavigateToString(html);
+                    }
                 }
             }
         }
@@ -775,12 +1120,57 @@ namespace WebSystemUwp
             }
         }
 
+        private void RefreshCurrentTab()
+        {
+            if (IsRustEngineActive)
+            {
+                if (_activeTab != null && !string.IsNullOrEmpty(_activeTab.Url) && _activeTab.Url != NewTabHomeUrl)
+                {
+                    NavigateBrowser(_activeTab.Url, pushHistory: false);
+                }
+            }
+            else
+            {
+                BrowserWebView.Refresh();
+            }
+        }
+
+        private async void ReRenderCurrentRustHtmlAsync()
+        {
+            if (_activeTab?.RenderedPage?.SourceHtml == null) return;
+
+            var page = await RustEngineBridge.RenderHtmlAsync(
+                _activeTab.RenderedPage.SourceHtml,
+                _activeTab.Url ?? "",
+                GetRustViewportWidth(),
+                MenuToggleDarkMode.IsChecked);
+            page.SourceHtml = _activeTab.RenderedPage.SourceHtml;
+            _activeTab.RenderedPage = page;
+            DisplayRustPage(page);
+        }
+
         private void SetZoom_Click(object sender, RoutedEventArgs e)
         {
             if (sender is MenuFlyoutItem item && item.Tag is string tag && int.TryParse(tag, out int zoom))
             {
                 _currentZoom = zoom;
-                try { BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetZoomScript(_currentZoom) }); } catch {}
+                if (IsRustEngineActive)
+                {
+                    ReRenderCurrentRustHtmlAsync();
+                }
+                else
+                {
+                    try { BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetZoomScript(_currentZoom) }); } catch {}
+                }
+            }
+        }
+
+        private void MenuToggleRustEngine_Click(object sender, RoutedEventArgs e)
+        {
+            SettingsService.UseRustBrowserEngine = MenuToggleRustEngine.IsChecked;
+            if (_activeTab != null && !string.IsNullOrEmpty(_activeTab.Url) && _activeTab.Url != NewTabHomeUrl)
+            {
+                NavigateBrowser(_activeTab.Url, pushHistory: false);
             }
         }
 
@@ -789,13 +1179,19 @@ namespace WebSystemUwp
         private void MenuToggleImgBlock_Click(object sender, RoutedEventArgs e) => BrowserWebView.Refresh();
         private async void MenuToggleDarkMode_Click(object sender, RoutedEventArgs e)
         {
+            if (IsRustEngineActive && _activeTab?.RenderedPage?.SourceHtml != null)
+            {
+                ReRenderCurrentRustHtmlAsync();
+                return;
+            }
+
             try { await BrowserWebView.InvokeScriptAsync("eval", new[] { EngineOptimizer.GetDarkModeScript() }); } catch {}
         }
 
         private void MenuToggleDesktop_Click(object sender, RoutedEventArgs e)
         {
             _currentUa = MenuToggleDesktop.IsChecked ? UserAgentProfile.ChromeDesktop : UserAgentProfile.ChromeMobile;
-            BrowserWebView.Refresh();
+            RefreshCurrentTab();
         }
 
         private void SetUserAgent_Click(object sender, RoutedEventArgs e)
@@ -803,7 +1199,7 @@ namespace WebSystemUwp
             if (sender is MenuFlyoutItem item && item.Tag is string tag && Enum.TryParse<UserAgentProfile>(tag, out var profile))
             {
                 _currentUa = profile;
-                BrowserWebView.Refresh();
+                RefreshCurrentTab();
             }
         }
 
@@ -876,7 +1272,9 @@ namespace WebSystemUwp
             try
             {
                 ToolsDeviceInfoBox.Text = DeviceService.GetDeviceSummary();
-                ToolsDiagnosticsBox.Text = DiagnosticsService.GetFullDiagnosticsSummary();
+                ToolsDiagnosticsBox.Text = DiagnosticsService.GetFullDiagnosticsSummary() +
+                                           "\n" +
+                                           RustEngineBridge.GetCoreStatusSummary();
             }
             catch {}
         }
@@ -897,13 +1295,15 @@ namespace WebSystemUwp
             {
                 Url = url,
                 Method = method,
-                TimeoutSeconds = 15
+                TimeoutSeconds = 15,
+                UseRustTlsEngine = ToolsUseRustTlsCheck.IsChecked == true
             };
 
             var res = await WebService.RequestAsync(req);
+            string transport = string.IsNullOrEmpty(res.TransportInfo) ? "" : $" [{res.TransportInfo}]";
             ToolsApiStatusText.Text = res.IsSuccess
-                ? $"✅ {res.StatusCode} {res.StatusText} ({res.ResponseTimeMs} ms)"
-                : $"❌ Lỗi: {res.ErrorType} — {res.ErrorMessage}";
+                ? $"✅ {res.StatusCode} {res.StatusText} ({res.ResponseTimeMs} ms){transport}"
+                : $"❌ Lỗi: {res.ErrorType} — {res.ErrorMessage}{transport}";
             ToolsApiResponseBox.Text = res.Body ?? res.ErrorMessage;
         }
 
