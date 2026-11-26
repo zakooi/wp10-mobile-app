@@ -148,6 +148,7 @@ namespace WebSystemUwp
             try
             {
                 MenuToggleRustEngine.IsChecked = SettingsService.UseRustBrowserEngine && RustEngineBridge.IsAvailable;
+                MenuToggleRustJs.IsChecked = SettingsService.UseRustJavaScript && RustEngineBridge.IsAvailable;
                 MenuToggleAdBlock.IsChecked = SettingsService.AutoBlockAds;
                 MenuToggleImgBlock.IsChecked = SettingsService.AutoBlockImages;
                 MenuTogglePolyfills.IsChecked = SettingsService.AutoInjectPolyfills;
@@ -421,6 +422,7 @@ namespace WebSystemUwp
                     method,
                     postBody,
                     requestContentType,
+                    MenuToggleRustJs.IsChecked,
                     ct);
                 if (seq != _rustNavSeq || ct.IsCancellationRequested) return;
 
@@ -1751,9 +1753,11 @@ namespace WebSystemUwp
             }
 
             string prevCss = _activeTab.RenderedPage.CombinedCss ?? string.Empty;
+            string prevJs = _activeTab.RenderedPage.CombinedJs ?? string.Empty;
             string prevTransport = _activeTab.RenderedPage.TransportInfo;
             long prevElapsed = _activeTab.RenderedPage.ElapsedMs;
             int prevCssCount = _activeTab.RenderedPage.ExternalCssCount;
+            string ua = EngineOptimizer.UserAgents.TryGetValue(_currentUa, out var profileUa) ? profileUa : string.Empty;
 
             var page = await RustEngineBridge.RenderHtmlAsync(
                 _activeTab.RenderedPage.SourceHtml,
@@ -1763,7 +1767,10 @@ namespace WebSystemUwp
                 prevCss,
                 MenuToggleAdBlock.IsChecked,
                 MenuToggleImgBlock.IsChecked,
-                _isRustReaderMode);
+                _isRustReaderMode,
+                prevJs,
+                ua,
+                MenuToggleRustJs.IsChecked && !_isRustReaderMode);
 
             foreach (var newItem in page.Items)
             {
@@ -1779,12 +1786,22 @@ namespace WebSystemUwp
 
             page.SourceHtml = _activeTab.RenderedPage.SourceHtml;
             page.CombinedCss = prevCss;
+            page.CombinedJs = prevJs;
             page.TransportInfo = prevTransport;
             page.ElapsedMs = prevElapsed;
             page.ExternalCssCount = prevCssCount;
             page.IsReaderMode = _isRustReaderMode;
             _activeTab.RenderedPage = page;
             DisplayRustPage(page);
+        }
+
+        private void MenuToggleRustJs_Click(object sender, RoutedEventArgs e)
+        {
+            SettingsService.UseRustJavaScript = MenuToggleRustJs.IsChecked;
+            if (IsRustEngineActive && _activeTab?.RenderedPage?.SourceHtml != null)
+            {
+                ReRenderCurrentRustHtmlAsync();
+            }
         }
 
         private void SetZoom_Click(object sender, RoutedEventArgs e)

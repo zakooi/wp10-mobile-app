@@ -58,6 +58,12 @@ namespace WebSystemUwp.Services
             set => SetValue("UseRustBrowserEngine", value);
         }
 
+        public static bool UseRustJavaScript
+        {
+            get => GetValue("UseRustJavaScript", true);
+            set => SetValue("UseRustJavaScript", value);
+        }
+
         public static string GetSearchUrl(string query)
         {
             string engine = SearchEngine;

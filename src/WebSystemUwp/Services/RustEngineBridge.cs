@@ -22,16 +22,26 @@ namespace WebSystemUwp.Services
 
     /// <summary>
     /// Cầu nối P/Invoke tới lõi trình duyệt Rust (websystem_core.dll).
-    /// Giai đoạn 0-4: HTTP/TLS 1.3 + Cookies (rustls), External CSS, HTML5/CSS Layout (WSR2), Forms &amp; Images.
+    /// Giai đoạn 0-5: HTTP/TLS 1.3 + Cookies, External CSS, Boa JS ES6+ DOM Sandbox, HTML5/CSS Layout (WSR2).
     /// </summary>
     public static class RustEngineBridge
     {
         private const string NativeDllName = "websystem_core.dll";
         private const int DefaultBufferSize = 1024;
-        private const int MaxExternalStylesheets = 4;
+        private const int MaxExternalResources = 4;
         private const int MaxExternalCssBytes = 512 * 1024;
+        private const int MaxExternalJsBytes = 256 * 1024;
+        private const string ScriptChunkSeparator = "\n/*__WS_SCRIPT_SEP__*/\n";
         private const uint RenderMagicWsr2 = 0x57535232; // "WSR2"
         private static readonly SemaphoreSlim HttpGate = new SemaphoreSlim(4, 4);
+
+        private delegate int NativeExtractUrlsDelegate(
+            byte[] htmlPtr,
+            UIntPtr htmlLen,
+            byte[] baseUrlPtr,
+            UIntPtr baseUrlLen,
+            byte[] outBuf,
+            UIntPtr outCap);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern uint ws_core_version();
@@ -98,6 +108,15 @@ namespace WebSystemUwp.Services
             UIntPtr outCap);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int ws_extract_scripts(
+            byte[] htmlPtr,
+            UIntPtr htmlLen,
+            byte[] baseUrlPtr,
+            UIntPtr baseUrlLen,
+            byte[] outBuf,
+            UIntPtr outCap);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr ws_render_html_v2(
             byte[] htmlPtr,
             UIntPtr htmlLen,
@@ -105,14 +124,25 @@ namespace WebSystemUwp.Services
             UIntPtr baseUrlLen,
             byte[] extraCssPtr,
             UIntPtr extraCssLen,
+            byte[] extraJsPtr,
+            UIntPtr extraJsLen,
+            byte[] uaPtr,
+            UIntPtr uaLen,
             float viewportWidth,
             byte darkMode,
             byte blockAds,
             byte blockImages,
-            byte readerMode);
+            byte readerMode,
+            byte enableJs);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern UIntPtr ws_render_buffer_len(IntPtr buf);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint ws_render_buffer_js_scripts(IntPtr buf);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint ws_render_buffer_js_errors(IntPtr buf);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern int ws_render_buffer_copy(IntPtr buf, byte[] outBuf, UIntPtr outCap);
@@ -251,17 +281,23 @@ namespace WebSystemUwp.Services
             string extraCss = "",
             bool blockAds = false,
             bool blockImages = false,
-            bool readerMode = false)
+            bool readerMode = false,
+            string extraJs = "",
+            string userAgent = "",
+            bool enableJs = false)
         {
             return Task.Run(() => RenderHtmlSync(
                 html ?? string.Empty,
                 baseUrl ?? string.Empty,
                 extraCss ?? string.Empty,
+                extraJs ?? string.Empty,
+                userAgent ?? string.Empty,
                 viewportWidth,
                 darkMode,
                 blockAds,
                 blockImages,
-                readerMode));
+                readerMode,
+                enableJs));
         }
 
         public static async Task<RustRenderPage> FetchAndRenderAsync(
@@ -276,6 +312,7 @@ namespace WebSystemUwp.Services
             string method = "GET",
             string postBody = null,
             string requestContentType = null,
+            bool enableJs = true,
             CancellationToken ct = default(CancellationToken))
         {
             var httpResp = await SendHttpRequestAsync(new WebEngineRequest
@@ -322,12 +359,37 @@ namespace WebSystemUwp.Services
             }
 
             string combinedCss = string.Empty;
+            string combinedJs = string.Empty;
             int cssCount = 0;
+
             if (isHtml && !readerMode && !string.IsNullOrEmpty(htmlToRender) && !ct.IsCancellationRequested)
             {
-                var fetched = await FetchExternalStylesheetsAsync(htmlToRender, effectiveUrl, userAgent, blockAds, ct);
-                combinedCss = fetched.Item1;
-                cssCount = fetched.Item2;
+                var cssTask = FetchExternalResourcesAsync(
+                    ws_extract_stylesheets,
+                    htmlToRender,
+                    effectiveUrl,
+                    userAgent,
+                    blockAds,
+                    MaxExternalCssBytes,
+                    "\n",
+                    ct);
+
+                var jsTask = enableJs
+                    ? FetchExternalResourcesAsync(
+                        ws_extract_scripts,
+                        htmlToRender,
+                        effectiveUrl,
+                        userAgent,
+                        blockAds,
+                        MaxExternalJsBytes,
+                        ScriptChunkSeparator,
+                        ct)
+                    : Task.FromResult(Tuple.Create(string.Empty, 0));
+
+                await Task.WhenAll(cssTask, jsTask);
+                combinedCss = cssTask.Result.Item1;
+                cssCount = cssTask.Result.Item2;
+                combinedJs = jsTask.Result.Item1;
             }
 
             var page = await RenderHtmlAsync(
@@ -338,11 +400,15 @@ namespace WebSystemUwp.Services
                 combinedCss,
                 blockAds,
                 blockImages,
-                readerMode);
+                readerMode,
+                combinedJs,
+                userAgent,
+                isHtml && enableJs && !readerMode);
 
             page.Url = effectiveUrl;
             page.SourceHtml = htmlToRender;
             page.CombinedCss = combinedCss;
+            page.CombinedJs = combinedJs;
             page.ExternalCssCount = cssCount;
             page.IsReaderMode = readerMode;
             page.TransportInfo = httpResp.TransportInfo;
@@ -350,54 +416,62 @@ namespace WebSystemUwp.Services
             return page;
         }
 
-        private static async Task<Tuple<string, int>> FetchExternalStylesheetsAsync(
+        private static bool IsTrackerUrl(string url)
+        {
+            return url.IndexOf("doubleclick", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("googlesyndication", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("google-analytics", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("googletagmanager", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("fbevents", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("cookie", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   url.IndexOf("onetrust", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static async Task<Tuple<string, int>> FetchExternalResourcesAsync(
+            NativeExtractUrlsDelegate extractor,
             string html,
             string baseUrl,
             string userAgent,
             bool blockAds,
+            int maxBytes,
+            string joinSeparator,
             CancellationToken ct)
         {
             try
             {
-                var urls = ExtractStylesheetUrls(html, baseUrl);
+                var urls = ExtractUrlList(extractor, html, baseUrl);
                 if (blockAds)
                 {
-                    urls = urls.Where(u =>
-                        u.IndexOf("doubleclick", StringComparison.OrdinalIgnoreCase) < 0 &&
-                        u.IndexOf("googlesyndication", StringComparison.OrdinalIgnoreCase) < 0 &&
-                        u.IndexOf("cookie", StringComparison.OrdinalIgnoreCase) < 0 &&
-                        u.IndexOf("onetrust", StringComparison.OrdinalIgnoreCase) < 0).ToList();
+                    urls = urls.Where(u => !IsTrackerUrl(u)).ToList();
                 }
 
-                var targets = urls.Take(MaxExternalStylesheets).ToList();
+                var targets = urls.Take(MaxExternalResources).ToList();
                 if (targets.Count == 0)
                 {
                     return Tuple.Create(string.Empty, 0);
                 }
 
-                var tasks = targets.Select(cssUrl => SendHttpRequestAsync(new WebEngineRequest
+                var tasks = targets.Select(u => SendHttpRequestAsync(new WebEngineRequest
                 {
-                    Url = cssUrl,
+                    Url = u,
                     Method = "GET",
                     UserAgent = userAgent,
                     TimeoutSeconds = 6,
-                    MaxResponseBytes = MaxExternalCssBytes,
+                    MaxResponseBytes = maxBytes,
                     UseRustTlsEngine = true,
                     CancellationToken = ct
                 })).ToArray();
 
                 var responses = await Task.WhenAll(tasks);
-                var sb = new StringBuilder();
-                int loaded = 0;
+                var chunks = new List<string>();
                 foreach (var resp in responses)
                 {
                     if (resp != null && resp.IsSuccess && !string.IsNullOrEmpty(resp.Body))
                     {
-                        sb.AppendLine(resp.Body);
-                        loaded++;
+                        chunks.Add(resp.Body);
                     }
                 }
-                return Tuple.Create(sb.ToString(), loaded);
+                return Tuple.Create(string.Join(joinSeparator, chunks), chunks.Count);
             }
             catch
             {
@@ -405,7 +479,7 @@ namespace WebSystemUwp.Services
             }
         }
 
-        private static List<string> ExtractStylesheetUrls(string html, string baseUrl)
+        private static List<string> ExtractUrlList(NativeExtractUrlsDelegate extractor, string html, string baseUrl)
         {
             var list = new List<string>();
             try
@@ -413,7 +487,7 @@ namespace WebSystemUwp.Services
                 byte[] htmlBytes = Encoding.UTF8.GetBytes(html ?? string.Empty);
                 byte[] urlBytes = Encoding.UTF8.GetBytes(baseUrl ?? string.Empty);
                 var outBuf = new byte[8192];
-                int written = ws_extract_stylesheets(
+                int written = extractor(
                     htmlBytes, (UIntPtr)htmlBytes.Length,
                     urlBytes, (UIntPtr)urlBytes.Length,
                     outBuf, (UIntPtr)outBuf.Length);
@@ -422,7 +496,6 @@ namespace WebSystemUwp.Services
                 {
                     int safeLen = Math.Min(written, outBuf.Length);
                     string joined = Encoding.UTF8.GetString(outBuf, 0, safeLen);
-                    // Drop potentially truncated last line if buffer filled up
                     if (safeLen >= outBuf.Length - 4)
                     {
                         int lastNl = joined.LastIndexOf('\n');
@@ -595,15 +668,20 @@ namespace WebSystemUwp.Services
             string html,
             string baseUrl,
             string extraCss,
+            string extraJs,
+            string userAgent,
             float viewportWidth,
             bool darkMode,
             bool blockAds,
             bool blockImages,
-            bool readerMode)
+            bool readerMode,
+            bool enableJs)
         {
             byte[] htmlBytes = Encoding.UTF8.GetBytes(html);
             byte[] urlBytes = Encoding.UTF8.GetBytes(baseUrl);
             byte[] cssBytes = string.IsNullOrEmpty(extraCss) ? new byte[0] : Encoding.UTF8.GetBytes(extraCss);
+            byte[] jsBytes = string.IsNullOrEmpty(extraJs) ? new byte[0] : Encoding.UTF8.GetBytes(extraJs);
+            byte[] uaBytes = string.IsNullOrEmpty(userAgent) ? new byte[0] : Encoding.UTF8.GetBytes(userAgent);
             IntPtr bufHandle = IntPtr.Zero;
 
             try
@@ -612,17 +690,22 @@ namespace WebSystemUwp.Services
                     htmlBytes, (UIntPtr)htmlBytes.Length,
                     urlBytes, (UIntPtr)urlBytes.Length,
                     cssBytes, (UIntPtr)cssBytes.Length,
+                    jsBytes, (UIntPtr)jsBytes.Length,
+                    uaBytes, (UIntPtr)uaBytes.Length,
                     viewportWidth,
                     darkMode ? (byte)1 : (byte)0,
                     blockAds ? (byte)1 : (byte)0,
                     blockImages ? (byte)1 : (byte)0,
-                    readerMode ? (byte)1 : (byte)0);
+                    readerMode ? (byte)1 : (byte)0,
+                    enableJs ? (byte)1 : (byte)0);
 
                 if (bufHandle == IntPtr.Zero)
                 {
                     return new RustRenderPage { Url = baseUrl, Title = baseUrl, ContentWidth = viewportWidth, ContentHeight = 200 };
                 }
 
+                int jsScripts = (int)ws_render_buffer_js_scripts(bufHandle);
+                int jsErrors = (int)ws_render_buffer_js_errors(bufHandle);
                 ulong len = ws_render_buffer_len(bufHandle).ToUInt64();
                 if (len == 0 || len > int.MaxValue)
                 {
@@ -636,7 +719,10 @@ namespace WebSystemUwp.Services
                     return new RustRenderPage { Url = baseUrl, Title = baseUrl, ContentWidth = viewportWidth, ContentHeight = 200 };
                 }
 
-                return DecodeDisplayList(raw, copied, baseUrl);
+                var page = DecodeDisplayList(raw, copied, baseUrl);
+                page.JsScriptsExecuted = jsScripts;
+                page.JsErrors = jsErrors;
+                return page;
             }
             finally
             {

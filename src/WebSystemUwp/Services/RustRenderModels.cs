@@ -53,10 +53,13 @@ namespace WebSystemUwp.Services
         public float ContentHeight { get; set; }
         public string SourceHtml { get; set; }
         public string CombinedCss { get; set; }
+        public string CombinedJs { get; set; }
         public string TransportInfo { get; set; }
         public long ElapsedMs { get; set; }
         public bool IsReaderMode { get; set; }
         public int ExternalCssCount { get; set; }
+        public int JsScriptsExecuted { get; set; }
+        public int JsErrors { get; set; }
         public List<RenderDisplayItem> Items { get; } = new List<RenderDisplayItem>();
         public List<RenderDisplayItem> HiddenInputs { get; } = new List<RenderDisplayItem>();
     }

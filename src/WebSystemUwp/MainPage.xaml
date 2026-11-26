@@ -95,6 +95,7 @@
                             <MenuFlyoutItem Text="📋 Sao Chép Liên Kết" Click="CopyCurrentUrl_Click" />
                             <MenuFlyoutSeparator />
                             <ToggleMenuFlyoutItem x:Name="MenuToggleRustEngine" Text="🦀 Trình duyệt Rust Engine (TLS 1.3)" IsChecked="true" Click="MenuToggleRustEngine_Click" />
+                            <ToggleMenuFlyoutItem x:Name="MenuToggleRustJs" Text="⚙️ Chạy JavaScript (Boa ES6+)" IsChecked="true" Click="MenuToggleRustJs_Click" />
                             <ToggleMenuFlyoutItem x:Name="MenuToggleAdBlock" Text="🛡️ Chặn quảng cáo (Turbo)" IsChecked="true" Click="MenuToggleAdBlock_Click" />
                             <ToggleMenuFlyoutItem x:Name="MenuTogglePolyfills" Text="💉 Tiêm JS Polyfills ES6+" IsChecked="true" Click="MenuTogglePolyfills_Click" />
                             <ToggleMenuFlyoutItem x:Name="MenuToggleImgBlock" Text="🖼️ Chặn hình ảnh (Tiết kiệm Data)" IsChecked="false" Click="MenuToggleImgBlock_Click" />

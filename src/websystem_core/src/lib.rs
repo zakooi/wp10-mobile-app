@@ -1,7 +1,9 @@
 mod http_client;
+mod js_engine;
 mod layout_engine;
 
 use http_client::{execute_http_request, WsHttpResponse};
+use js_engine::{execute_page_scripts, extract_script_urls};
 use layout_engine::{
     extract_stylesheet_urls, render_html_with_options, RenderOptions, WsRenderBuffer,
 };
@@ -10,7 +12,7 @@ use std::slice;
 use std::str;
 
 const VERSION_MAJOR: u32 = 0;
-const VERSION_MINOR: u32 = 4;
+const VERSION_MINOR: u32 = 5;
 const VERSION_PATCH: u32 = 0;
 
 /// Copies `text` as UTF-8 bytes into `out_buf` (truncating cleanly at a UTF-8 char boundary).
@@ -61,7 +63,7 @@ pub extern "C" fn ws_core_version() -> u32 {
 #[no_mangle]
 pub extern "C" fn ws_core_get_info(out_buf: *mut u8, out_cap: usize) -> i32 {
     let info = format!(
-        "websystem_core v{}.{}.{} ({}/{}) [rustls+cookies+html5ever+taffy+WSR2]",
+        "websystem_core v{}.{}.{} ({}/{}) [rustls+cookies+boa_js+html5ever+taffy+WSR2]",
         VERSION_MAJOR,
         VERSION_MINOR,
         VERSION_PATCH,
@@ -270,7 +272,32 @@ pub extern "C" fn ws_extract_stylesheets(
     write_utf8_to_buf(&joined, out_buf, out_cap)
 }
 
-/// Renders HTML + CSS + options into a `WSR2` binary Display List.
+/// Extracts newline-separated resolved `<script src="...">` URLs from HTML.
+#[no_mangle]
+pub extern "C" fn ws_extract_scripts(
+    html_ptr: *const u8,
+    html_len: usize,
+    base_url_ptr: *const u8,
+    base_url_len: usize,
+    out_buf: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    if out_buf.is_null() || out_cap == 0 {
+        return -1;
+    }
+    // SAFETY: Caller guarantees valid input slices for this synchronous call.
+    let html_bytes = unsafe { read_input_bytes(html_ptr, html_len) };
+    let url_bytes = unsafe { read_input_bytes(base_url_ptr, base_url_len) };
+
+    let html = String::from_utf8_lossy(html_bytes);
+    let base_url = str::from_utf8(url_bytes).unwrap_or("");
+
+    let urls = extract_script_urls(&html, base_url);
+    let joined = urls.join("\n");
+    write_utf8_to_buf(&joined, out_buf, out_cap)
+}
+
+/// Executes page JavaScript (Boa ES6+ DOM sandbox) if `enable_js != 0`, then renders HTML + CSS into `WSR2`.
 /// Caller must release the returned pointer using `ws_render_buffer_free`.
 #[no_mangle]
 pub extern "C" fn ws_render_html_v2(
@@ -280,20 +307,40 @@ pub extern "C" fn ws_render_html_v2(
     base_url_len: usize,
     extra_css_ptr: *const u8,
     extra_css_len: usize,
+    extra_js_ptr: *const u8,
+    extra_js_len: usize,
+    ua_ptr: *const u8,
+    ua_len: usize,
     viewport_width: f32,
     dark_mode: u8,
     block_ads: u8,
     block_images: u8,
     reader_mode: u8,
+    enable_js: u8,
 ) -> *mut WsRenderBuffer {
     // SAFETY: Caller guarantees valid input byte slices for this synchronous call.
     let html_bytes = unsafe { read_input_bytes(html_ptr, html_len) };
     let url_bytes = unsafe { read_input_bytes(base_url_ptr, base_url_len) };
     let css_bytes = unsafe { read_input_bytes(extra_css_ptr, extra_css_len) };
+    let js_bytes = unsafe { read_input_bytes(extra_js_ptr, extra_js_len) };
+    let ua_bytes = unsafe { read_input_bytes(ua_ptr, ua_len) };
 
     let html = String::from_utf8_lossy(html_bytes);
     let base_url = str::from_utf8(url_bytes).unwrap_or("");
     let extra_css = String::from_utf8_lossy(css_bytes);
+    let extra_js = String::from_utf8_lossy(js_bytes);
+    let ua = str::from_utf8(ua_bytes).unwrap_or("");
+
+    let (effective_html, js_scripts, js_errors) = if enable_js != 0 {
+        let js_out = execute_page_scripts(&html, base_url, &extra_js, ua, dark_mode != 0);
+        (
+            std::borrow::Cow::Owned(js_out.html),
+            js_out.scripts_executed as u32,
+            js_out.errors as u32,
+        )
+    } else {
+        (html, 0, 0)
+    };
 
     let opts = RenderOptions {
         viewport_width,
@@ -303,7 +350,9 @@ pub extern "C" fn ws_render_html_v2(
         reader_mode: reader_mode != 0,
     };
 
-    let buf = render_html_with_options(&html, base_url, &extra_css, opts);
+    let mut buf = render_html_with_options(&effective_html, base_url, &extra_css, opts);
+    buf.js_scripts = js_scripts;
+    buf.js_errors = js_errors;
     Box::into_raw(Box::new(buf))
 }
 
@@ -314,6 +363,24 @@ pub extern "C" fn ws_render_buffer_len(buf: *const WsRenderBuffer) -> usize {
     }
     // SAFETY: Non-null handle created by `ws_render_html_v2`.
     unsafe { (*buf).bytes.len() }
+}
+
+#[no_mangle]
+pub extern "C" fn ws_render_buffer_js_scripts(buf: *const WsRenderBuffer) -> u32 {
+    if buf.is_null() {
+        return 0;
+    }
+    // SAFETY: Non-null handle created by `ws_render_html_v2`.
+    unsafe { (*buf).js_scripts }
+}
+
+#[no_mangle]
+pub extern "C" fn ws_render_buffer_js_errors(buf: *const WsRenderBuffer) -> u32 {
+    if buf.is_null() {
+        return 0;
+    }
+    // SAFETY: Non-null handle created by `ws_render_html_v2`.
+    unsafe { (*buf).js_errors }
 }
 
 #[no_mangle]

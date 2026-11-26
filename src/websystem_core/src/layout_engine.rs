@@ -643,6 +643,8 @@ struct DisplayCommand {
 
 pub struct WsRenderBuffer {
     pub bytes: Vec<u8>,
+    pub js_scripts: u32,
+    pub js_errors: u32,
 }
 
 fn collapse_whitespace(input: &str) -> String {
@@ -2214,7 +2216,11 @@ fn serialize_display_list(
         write_len_prefixed_str(&mut bytes, &cmd.extra);
     }
 
-    WsRenderBuffer { bytes }
+    WsRenderBuffer {
+        bytes,
+        js_scripts: 0,
+        js_errors: 0,
+    }
 }
 
 #[cfg(test)]
