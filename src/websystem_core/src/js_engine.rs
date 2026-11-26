@@ -1113,10 +1113,11 @@ fn register_host_bindings(ctx: &mut Context) -> JsResult<()> {
         .function(NativeFunction::from_fn_ptr(host_add_dom_listener), js_string!("addDomListener"), 1)
         .build();
 
-    let global = ctx.global_object();
-    ObjectInitializer::with_object(global, ctx)
-        .property(js_string!("__ws"), host_obj, boa_engine::property::Attribute::READONLY)
-        .build();
+    ctx.register_global_property(
+        js_string!("__ws"),
+        host_obj,
+        boa_engine::property::Attribute::READONLY,
+    )?;
     Ok(())
 }
 
@@ -1350,7 +1351,7 @@ mod tests {
 
     #[test]
     fn test_dom_mutation_and_bootstrap() {
-        let html = r#"
+        let html = r##"
             <html><head><title>Init</title></head>
             <body>
                 <div id="app" class="hidden"><p>Old</p></div>
@@ -1369,7 +1370,7 @@ mod tests {
                     });
                 </script>
             </body></html>
-        "#;
+        "##;
         let res = execute_page_scripts(html, "https://example.com/a", "", "TestUA", false);
         assert_eq!(res.scripts_executed, 1);
         assert_eq!(res.errors, 0);
