@@ -414,12 +414,12 @@ fn parse_declarations(decls: &str) -> CssProps {
             }
             "color" => props.color = parse_css_color(val),
             "background-color" | "background" => {
-                if let Some(c) = val.split_whitespace().find_map(parse_css_color) {
+                if let Some(c) = find_css_color_in_value(val) {
                     props.bg_color = Some(c);
                 }
             }
             "border" | "border-top" | "border-bottom" => {
-                if let Some(c) = val.split_whitespace().find_map(parse_css_color) {
+                if let Some(c) = find_css_color_in_value(val) {
                     props.border_color = Some(c);
                 }
             }
@@ -518,6 +518,23 @@ fn parse_html_dim(val: Option<&str>) -> Option<f32> {
     }
     let clean = s.trim_end_matches("px").trim();
     clean.parse::<f32>().ok().filter(|n| n.is_finite() && *n > 0.0)
+}
+
+fn find_css_color_in_value(val: &str) -> Option<u32> {
+    if let Some(c) = parse_css_color(val) {
+        return Some(c);
+    }
+    let low = val.to_ascii_lowercase();
+    for prefix in ["rgba(", "rgb("] {
+        if let Some(start) = low.find(prefix) {
+            if let Some(end_rel) = low[start..].find(')') {
+                if let Some(c) = parse_css_color(&low[start..start + end_rel + 1]) {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    val.split_whitespace().find_map(parse_css_color)
 }
 
 fn parse_css_color(val: &str) -> Option<u32> {

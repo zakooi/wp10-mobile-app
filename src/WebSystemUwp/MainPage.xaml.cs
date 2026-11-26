@@ -1695,7 +1695,8 @@ namespace WebSystemUwp
             string targetUrl = _activeTab?.Url;
             if (!string.IsNullOrWhiteSpace(targetUrl) &&
                 Uri.TryCreate(targetUrl, UriKind.Absolute, out var uri) &&
-                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                 uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
             {
                 req.Data.SetWebLink(uri);
             }
