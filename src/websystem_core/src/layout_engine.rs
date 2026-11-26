@@ -653,14 +653,14 @@ impl<'a> BuildState<'a> {
             self.node_count += 1;
             let hr_style = Style {
                 size: Size {
-                    width: percent(1.0),
-                    height: length(2.0),
+                    width: percent(1.0_f32),
+                    height: length(2.0_f32),
                 },
                 margin: Rect {
-                    left: length(0.0),
-                    right: length(0.0),
-                    top: length(8.0),
-                    bottom: length(8.0),
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(8.0_f32),
+                    bottom: length(8.0_f32),
                 },
                 ..Default::default()
             };
@@ -694,16 +694,16 @@ impl<'a> BuildState<'a> {
             self.node_count += 1;
             let img_style = Style {
                 padding: Rect {
-                    left: length(8.0),
-                    right: length(8.0),
-                    top: length(6.0),
-                    bottom: length(6.0),
+                    left: length(8.0_f32),
+                    right: length(8.0_f32),
+                    top: length(6.0_f32),
+                    bottom: length(6.0_f32),
                 },
                 margin: Rect {
-                    left: length(0.0),
-                    right: length(0.0),
-                    top: length(4.0),
-                    bottom: length(6.0),
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(4.0_f32),
+                    bottom: length(6.0_f32),
                 },
                 ..Default::default()
             };
@@ -868,10 +868,10 @@ impl<'a> BuildState<'a> {
                 height: auto(),
             },
             margin: Rect {
-                left: length(0.0),
-                right: length(0.0),
-                top: length(1.0),
-                bottom: length(2.0),
+                left: length(0.0_f32),
+                right: length(0.0_f32),
+                top: length(1.0_f32),
+                bottom: length(2.0_f32),
             },
             ..Default::default()
         };
@@ -992,10 +992,10 @@ pub fn render_html_to_display_list(
     let root_style = Style {
         display: Display::Block,
         padding: Rect {
-            left: length(12.0),
-            right: length(12.0),
-            top: length(10.0),
-            bottom: length(24.0),
+            left: length(12.0_f32),
+            right: length(12.0_f32),
+            top: length(10.0_f32),
+            bottom: length(24.0_f32),
         },
         ..Default::default()
     };
@@ -1014,22 +1014,18 @@ pub fn render_html_to_display_list(
             width: AvailableSpace::Definite(width),
             height: AvailableSpace::MaxContent,
         },
-        |inputs, _node_id, node_context, style| {
-            taffy::compute_leaf_layout(
-                inputs,
-                style,
-                |_, _| 0.0,
-                |known_dimensions, available_space| match node_context {
-                    Some(NodeContext::Text { text, font_size }) => {
-                        measure_wrapped_text(text, *font_size, known_dimensions.width, available_space.width)
-                    }
-                    Some(NodeContext::Divider) => Size {
-                        width: known_dimensions.width.unwrap_or(width - 24.0),
-                        height: known_dimensions.height.unwrap_or(2.0),
-                    },
-                    _ => Size::ZERO,
-                },
-            )
+        |known_dimensions, available_space, _node_id, node_context, _style| match node_context {
+            Some(NodeContext::Text { text, font_size }) => measure_wrapped_text(
+                text.as_str(),
+                *font_size,
+                known_dimensions.width,
+                available_space.width,
+            ),
+            Some(NodeContext::Divider) => Size {
+                width: known_dimensions.width.unwrap_or(width - 24.0),
+                height: known_dimensions.height.unwrap_or(2.0),
+            },
+            _ => Size::ZERO,
         },
     );
 
