@@ -9,8 +9,8 @@ name = "websystem_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "gzip"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "logging", "webpki"] }
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "logging", "tls12"] }
 rustls-rustcrypto = "0.0.2-alpha"
 scraper = "0.23"
 taffy = "0.9"
