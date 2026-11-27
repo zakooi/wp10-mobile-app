@@ -15,6 +15,12 @@ namespace WebSystemUwp.Services
         Hidden = 7
     }
 
+    public sealed class RustSelectOption
+    {
+        public string Value { get; set; }
+        public string Label { get; set; }
+    }
+
     public sealed class RenderDisplayItem
     {
         public RenderItemKind Kind { get; set; }
@@ -24,6 +30,7 @@ namespace WebSystemUwp.Services
         public bool IsPassword { get; set; }
         public bool IsMultiline { get; set; }
         public bool CenterText { get; set; }
+        public bool IsChecked { get; set; }
         public float X { get; set; }
         public float Y { get; set; }
         public float Width { get; set; }
@@ -42,6 +49,48 @@ namespace WebSystemUwp.Services
             if (string.IsNullOrEmpty(Extra)) return string.Empty;
             string[] parts = Extra.Split('\t');
             return index >= 0 && index < parts.Length ? parts[index] : string.Empty;
+        }
+
+        public List<RustSelectOption> GetSelectOptions()
+        {
+            var list = new List<RustSelectOption>();
+            string raw = GetExtraPart(3);
+            if (string.IsNullOrEmpty(raw)) return list;
+
+            foreach (string entry in raw.Split(new[] { '\x1f' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int sep = entry.IndexOf('\x1e');
+                if (sep >= 0)
+                {
+                    string val = entry.Substring(0, sep);
+                    string lbl = entry.Substring(sep + 1);
+                    list.Add(new RustSelectOption
+                    {
+                        Value = val,
+                        Label = string.IsNullOrEmpty(lbl) ? val : lbl
+                    });
+                }
+                else
+                {
+                    list.Add(new RustSelectOption { Value = entry, Label = entry });
+                }
+            }
+            return list;
+        }
+
+        public string GetSelectDisplayLabel()
+        {
+            var opts = GetSelectOptions();
+            foreach (var opt in opts)
+            {
+                if (string.Equals(opt.Value, Text, StringComparison.Ordinal))
+                {
+                    return opt.Label;
+                }
+            }
+            if (!string.IsNullOrEmpty(Text)) return Text;
+            string placeholder = GetExtraPart(1);
+            return string.IsNullOrEmpty(placeholder) ? "Chọn giá trị" : placeholder;
         }
     }
 

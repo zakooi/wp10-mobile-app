@@ -11,6 +11,7 @@ const FLAG_UNDERLINE: u8 = 4;
 const FLAG_PASSWORD: u8 = 8;
 const FLAG_MULTILINE: u8 = 16;
 const FLAG_CENTER: u8 = 32;
+const FLAG_CHECKED: u8 = 64;
 
 const KIND_BOX: u8 = 0;
 const KIND_TEXT: u8 = 1;
@@ -99,7 +100,10 @@ struct CssProps {
     padding_right: Option<f32>,
     width_px: Option<f32>,
     height_px: Option<f32>,
+    min_width_px: Option<f32>,
+    min_height_px: Option<f32>,
     max_width_px: Option<f32>,
+    flex_grow: Option<f32>,
 }
 
 impl CssProps {
@@ -179,16 +183,28 @@ impl CssProps {
         if other.height_px.is_some() {
             self.height_px = other.height_px;
         }
+        if other.min_width_px.is_some() {
+            self.min_width_px = other.min_width_px;
+        }
+        if other.min_height_px.is_some() {
+            self.min_height_px = other.min_height_px;
+        }
         if other.max_width_px.is_some() {
             self.max_width_px = other.max_width_px;
         }
+        if other.flex_grow.is_some() {
+            self.flex_grow = other.flex_grow;
+        }
     }
 }
+
+const MAX_COMPLEX_CSS_RULES: usize = 256;
 
 struct StyleSheet {
     by_tag: HashMap<String, CssProps>,
     by_class: HashMap<String, CssProps>,
     by_id: HashMap<String, CssProps>,
+    complex_rules: Vec<(String, CssProps)>,
 }
 
 impl StyleSheet {
@@ -197,6 +213,7 @@ impl StyleSheet {
             by_tag: HashMap::new(),
             by_class: HashMap::new(),
             by_id: HashMap::new(),
+            complex_rules: Vec::new(),
         };
 
         if !extra_css.trim().is_empty() {
@@ -277,38 +294,45 @@ impl StyleSheet {
 
             let props = parse_declarations(body);
             for sel in header.split(',') {
-                let mut s = sel.trim();
-                if s.is_empty() || s.contains('>') || s.contains('+') || s.contains('~') {
+                let s = sel.trim();
+                if s.is_empty()
+                    || s.contains('+')
+                    || s.contains('~')
+                    || s.contains(':')
+                    || s == "*"
+                {
                     continue;
                 }
-                // For descendant selectors like ".card .title" or "div p", keep simple right-most token if safe
-                if let Some((_, right)) = s.rsplit_once(' ') {
-                    s = right.trim();
-                }
-                if s.contains(':') || s.contains('[') {
+
+                let is_complex = s.contains(' ') || s.contains('>') || s.contains('[');
+                if is_complex {
+                    if self.complex_rules.len() < MAX_COMPLEX_CSS_RULES {
+                        self.complex_rules.push((s.to_string(), props.clone()));
+                    }
                     continue;
                 }
 
                 if let Some(id) = s.strip_prefix('#') {
-                    self.by_id
-                        .entry(id.to_ascii_lowercase())
-                        .or_default()
-                        .merge_from(&props);
-                } else if let Some(cls) = s.strip_prefix('.') {
-                    let cls_key = cls.split('.').next().unwrap_or(cls);
-                    if !cls_key.is_empty() {
-                        self.by_class
-                            .entry(cls_key.to_ascii_lowercase())
+                    if !id.contains('.') {
+                        self.by_id
+                            .entry(id.to_ascii_lowercase())
                             .or_default()
                             .merge_from(&props);
+                    } else if self.complex_rules.len() < MAX_COMPLEX_CSS_RULES {
+                        self.complex_rules.push((s.to_string(), props.clone()));
                     }
-                } else if let Some((_, cls)) = s.split_once('.') {
-                    let cls_key = cls.split('.').next().unwrap_or(cls);
-                    if !cls_key.is_empty() {
+                } else if let Some(cls) = s.strip_prefix('.') {
+                    if !cls.contains('.') && !cls.is_empty() {
                         self.by_class
-                            .entry(cls_key.to_ascii_lowercase())
+                            .entry(cls.to_ascii_lowercase())
                             .or_default()
                             .merge_from(&props);
+                    } else if !cls.is_empty() && self.complex_rules.len() < MAX_COMPLEX_CSS_RULES {
+                        self.complex_rules.push((s.to_string(), props.clone()));
+                    }
+                } else if s.contains('.') || s.contains('#') {
+                    if self.complex_rules.len() < MAX_COMPLEX_CSS_RULES {
+                        self.complex_rules.push((s.to_string(), props.clone()));
                     }
                 } else {
                     self.by_tag
@@ -364,10 +388,30 @@ fn parse_declarations(decls: &str) -> CssProps {
                 } else if v == "flex" || v == "inline-flex" {
                     props.display_flex = Some(FlexDirection::Row);
                     props.display_inline = Some(false);
+                } else if v == "grid" || v == "inline-grid" {
+                    props.display_flex = Some(FlexDirection::Row);
+                    props.flex_wrap = Some(FlexWrap::Wrap);
+                    props.display_inline = Some(false);
                 } else if v == "inline" || v == "inline-block" {
                     props.display_inline = Some(true);
                 } else if v == "block" {
                     props.display_inline = Some(false);
+                }
+            }
+            "flex" => {
+                if let Some(first) = val.split_whitespace().next() {
+                    if let Ok(grow) = first.parse::<f32>() {
+                        if grow.is_finite() && grow >= 0.0 {
+                            props.flex_grow = Some(grow.min(10.0));
+                        }
+                    }
+                }
+            }
+            "flex-grow" => {
+                if let Ok(grow) = val.trim().parse::<f32>() {
+                    if grow.is_finite() && grow >= 0.0 {
+                        props.flex_grow = Some(grow.min(10.0));
+                    }
                 }
             }
             "flex-direction" => {
@@ -487,6 +531,8 @@ fn parse_declarations(decls: &str) -> CssProps {
             "padding-right" => props.padding_right = parse_px(val),
             "width" => props.width_px = parse_px(val),
             "height" => props.height_px = parse_px(val),
+            "min-width" => props.min_width_px = parse_px(val),
+            "min-height" => props.min_height_px = parse_px(val),
             "max-width" => props.max_width_px = parse_px(val),
             _ => {}
         }
@@ -518,6 +564,135 @@ fn parse_html_dim(val: Option<&str>) -> Option<f32> {
     }
     let clean = s.trim_end_matches("px").trim();
     clean.parse::<f32>().ok().filter(|n| n.is_finite() && *n > 0.0)
+}
+
+fn el_matches_simple(el_ref: ElementRef<'_>, token: &str) -> bool {
+    let t = token.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t == "*" {
+        return true;
+    }
+    let el = el_ref.value();
+
+    let (base, attr_cond) = if let Some(b_start) = t.find('[') {
+        if let Some(b_end) = t[b_start..].find(']') {
+            (&t[..b_start], Some(&t[b_start + 1..b_start + b_end]))
+        } else {
+            (t, None)
+        }
+    } else {
+        (t, None)
+    };
+
+    if let Some(cond) = attr_cond {
+        if let Some((ak, av)) = cond.split_once('=') {
+            let ak_low = ak.trim().to_ascii_lowercase();
+            let av_clean = av.trim().trim_matches('"').trim_matches('\'');
+            if el.attr(&ak_low) != Some(av_clean) {
+                return false;
+            }
+        } else {
+            let ak_low = cond.trim().to_ascii_lowercase();
+            if el.attr(&ak_low).is_none() {
+                return false;
+            }
+        }
+    }
+
+    if base.is_empty() {
+        return true;
+    }
+
+    let mut rest = base;
+    let mut req_tag: Option<&str> = None;
+    let mut req_id: Option<&str> = None;
+    let mut req_classes: Vec<&str> = Vec::new();
+
+    if !rest.starts_with('#') && !rest.starts_with('.') {
+        let cut = rest.find(['#', '.']).unwrap_or(rest.len());
+        req_tag = Some(&rest[..cut]);
+        rest = &rest[cut..];
+    }
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('#') {
+            let cut = after.find(['#', '.']).unwrap_or(after.len());
+            req_id = Some(&after[..cut]);
+            rest = &after[cut..];
+        } else if let Some(after) = rest.strip_prefix('.') {
+            let cut = after.find(['#', '.']).unwrap_or(after.len());
+            req_classes.push(&after[..cut]);
+            rest = &after[cut..];
+        } else {
+            break;
+        }
+    }
+
+    if let Some(rt) = req_tag {
+        if !el.name().eq_ignore_ascii_case(rt) {
+            return false;
+        }
+    }
+    if let Some(ri) = req_id {
+        if el.id() != Some(ri) {
+            return false;
+        }
+    }
+    for rc in req_classes {
+        if !el.classes().any(|c| c == rc) {
+            return false;
+        }
+    }
+    true
+}
+
+fn el_matches_complex(el_ref: ElementRef<'_>, selector: &str) -> bool {
+    let normalized = selector.replace('>', " > ");
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    let Some(&last) = tokens.last() else {
+        return false;
+    };
+    if last == ">" || !el_matches_simple(el_ref, last) {
+        return false;
+    }
+
+    let mut cur = el_ref;
+    let mut direct_child = false;
+    for &tok in tokens[..tokens.len() - 1].iter().rev() {
+        if tok == ">" {
+            direct_child = true;
+            continue;
+        }
+        if direct_child {
+            let Some(parent_el) = cur.parent().and_then(ElementRef::wrap) else {
+                return false;
+            };
+            if !el_matches_simple(parent_el, tok) {
+                return false;
+            }
+            cur = parent_el;
+            direct_child = false;
+        } else {
+            let mut matched = false;
+            let mut next_p = cur.parent().and_then(ElementRef::wrap);
+            while let Some(parent_el) = next_p {
+                if el_matches_simple(parent_el, tok) {
+                    cur = parent_el;
+                    matched = true;
+                    break;
+                }
+                next_p = parent_el.parent().and_then(ElementRef::wrap);
+            }
+            if !matched {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn find_css_color_in_value(val: &str) -> Option<u32> {
@@ -645,6 +820,18 @@ pub struct WsRenderBuffer {
     pub bytes: Vec<u8>,
     pub js_scripts: u32,
     pub js_errors: u32,
+}
+
+fn sanitize_extra(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| match c {
+            '\t' | '\r' | '\n' | '\x1e' | '\x1f' => ' ',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn collapse_whitespace(input: &str) -> String {
@@ -1062,6 +1249,11 @@ impl<'a> BuildState<'a> {
                 css.merge_from(id_rules);
             }
         }
+        for (sel, c_rules) in &self.sheet.complex_rules {
+            if el_matches_complex(el_ref, sel) {
+                css.merge_from(c_rules);
+            }
+        }
         if let Some(inline) = el.attr("style") {
             css.merge_from(&parse_declarations(inline));
         }
@@ -1285,21 +1477,58 @@ impl<'a> BuildState<'a> {
 
             if input_type == "checkbox" || input_type == "radio" {
                 let checked = el.attr("checked").is_some();
-                let glyph = if input_type == "checkbox" {
-                    if checked { "[✓]" } else { "[ ]" }
-                } else if checked {
-                    "(•)"
+                let submit_val = if value.trim().is_empty() {
+                    "on".to_string()
                 } else {
-                    "( )"
+                    value.trim().to_string()
                 };
-                return self.build_text_leaf(
-                    glyph.to_string(),
-                    fg,
-                    14.0,
-                    0,
-                    "",
-                    false,
+                let box_size = 24.0_f32;
+                self.node_count += 1;
+                let style = Style {
+                    size: Size {
+                        width: length(box_size),
+                        height: length(box_size),
+                    },
+                    flex_shrink: 0.0,
+                    margin: Rect {
+                        left: length(0.0_f32),
+                        right: length(6.0_f32),
+                        top: length(4.0_f32),
+                        bottom: length(4.0_f32),
+                    },
+                    ..Default::default()
+                };
+                let id = self
+                    .tree
+                    .new_leaf_with_context(
+                        style,
+                        NodeContext::Fixed {
+                            width: box_size,
+                            height: box_size,
+                        },
+                    )
+                    .ok()?;
+                self.metas.insert(
+                    id,
+                    RenderMeta {
+                        kind: KIND_INPUT,
+                        flags: if checked { FLAG_CHECKED } else { 0 },
+                        font_size: 14.0,
+                        fg_color: self.palette.link_fg,
+                        bg_color: self.palette.input_bg,
+                        border_color: self.palette.border_fg,
+                        form_id: fid,
+                        text: submit_val.clone(),
+                        href: action_method,
+                        extra: format!(
+                            "{}\t{}\t{}",
+                            sanitize_extra(&name),
+                            sanitize_extra(&submit_val),
+                            input_type
+                        ),
+                    },
                 );
+                return Some(id);
             }
 
             let box_w = css
@@ -1419,16 +1648,17 @@ impl<'a> BuildState<'a> {
             let name = el.attr("name").unwrap_or("").trim().to_string();
             let mut chosen_label = String::new();
             let mut chosen_val = String::new();
+            let mut options_encoded: Vec<String> = Vec::new();
             if let Ok(opt_sel) = Selector::parse("option") {
                 for opt in el_ref.select(&opt_sel) {
-                    let lbl = collapse_whitespace(&opt.text().collect::<String>());
-                    let val = opt.value().attr("value").unwrap_or(&lbl).to_string();
+                    let lbl = sanitize_extra(&collapse_whitespace(&opt.text().collect::<String>()));
+                    let val = sanitize_extra(opt.value().attr("value").unwrap_or(&lbl));
+                    if options_encoded.len() < 64 {
+                        options_encoded.push(format!("{}\x1e{}", val, lbl));
+                    }
                     if chosen_label.is_empty() || opt.value().attr("selected").is_some() {
                         chosen_label = lbl;
                         chosen_val = val;
-                        if opt.value().attr("selected").is_some() {
-                            break;
-                        }
                     }
                 }
             }
@@ -1463,6 +1693,11 @@ impl<'a> BuildState<'a> {
                     },
                 )
                 .ok()?;
+            let placeholder_lbl = if chosen_label.is_empty() {
+                "Chọn giá trị".to_string()
+            } else {
+                chosen_label.clone()
+            };
             self.metas.insert(
                 id,
                 RenderMeta {
@@ -1475,7 +1710,12 @@ impl<'a> BuildState<'a> {
                     form_id: fid,
                     text: if chosen_val.is_empty() { chosen_label } else { chosen_val },
                     href: action_method,
-                    extra: format!("{}\tChọn giá trị\tselect", name),
+                    extra: format!(
+                        "{}\t{}\tselect\t{}",
+                        sanitize_extra(&name),
+                        placeholder_lbl,
+                        options_encoded.join("\x1f")
+                    ),
                 },
             );
             return Some(id);
@@ -1669,7 +1909,11 @@ impl<'a> BuildState<'a> {
             flex_wrap,
             justify_content: css.justify_content,
             align_items: css.align_items,
-            flex_grow: if in_table_row { 1.0 } else { 0.0 },
+            flex_grow: if in_table_row {
+                1.0
+            } else {
+                css.flex_grow.unwrap_or(0.0)
+            },
             flex_shrink: 1.0,
             gap: Size {
                 width: length(gap_val),
@@ -1678,6 +1922,10 @@ impl<'a> BuildState<'a> {
             size: Size {
                 width: css.width_px.map(length).unwrap_or(auto()),
                 height: css.height_px.map(length).unwrap_or(auto()),
+            },
+            min_size: Size {
+                width: css.min_width_px.map(length).unwrap_or(auto()),
+                height: css.min_height_px.map(length).unwrap_or(auto()),
             },
             max_size: Size {
                 width: css.max_width_px.map(length).unwrap_or(percent(1.0_f32)),
@@ -2353,5 +2601,93 @@ mod tests {
         assert!(saw_hidden);
         assert!(saw_input);
         assert!(!saw_ad);
+    }
+
+    #[test]
+    fn test_complex_css_and_interactive_form_controls() {
+        let html = r#"
+            <html><head><style>
+                .box > p.lead { color: #ff0000; }
+                input[type="checkbox"] { margin-top: 2px; }
+                .grid { display: grid; flex-grow: 1; min-width: 120px; }
+            </style></head><body>
+                <div class="box"><p class="lead">Direct Lead</p></div>
+                <form action="/apply" method="post">
+                    <input type="checkbox" name="agree" value="yes" checked>
+                    <input type="radio" name="plan" value="pro" checked>
+                    <input type="radio" name="plan" value="free">
+                    <select name="country">
+                        <option value="us">United States</option>
+                        <option value="vn" selected>Vietnam</option>
+                    </select>
+                </form>
+            </body></html>
+        "#;
+        let buf = render_html_with_options(
+            html,
+            "https://example.com",
+            "",
+            RenderOptions {
+                viewport_width: 380.0,
+                dark_mode: false,
+                block_ads: false,
+                block_images: false,
+                reader_mode: false,
+            },
+        );
+        let b = &buf.bytes;
+        let mut off = 0usize;
+        assert_eq!(read_u32_le(b, &mut off), RENDER_MAGIC_V2);
+        let _w = read_f32_le(b, &mut off);
+        let _h = read_f32_le(b, &mut off);
+        let _title = read_str(b, &mut off);
+        let count = read_u32_le(b, &mut off);
+
+        let mut saw_lead = false;
+        let mut saw_checked_cb = false;
+        let mut saw_checked_radio = false;
+        let mut saw_unchecked_radio = false;
+        let mut saw_select = false;
+
+        for _ in 0..count {
+            let kind = b[off];
+            let flags = b[off + 1];
+            off += 2;
+            off += 20;
+            let fg = read_u32_le(b, &mut off);
+            let _bg = read_u32_le(b, &mut off);
+            let _border = read_u32_le(b, &mut off);
+            let _form_id = read_u32_le(b, &mut off);
+            let text = read_str(b, &mut off);
+            let _href = read_str(b, &mut off);
+            let extra = read_str(b, &mut off);
+
+            if text == "Direct Lead" {
+                saw_lead = true;
+                assert_eq!(fg, 0xFFFF_0000);
+            }
+            if kind == KIND_INPUT && extra == "agree\tyes\tcheckbox" {
+                assert_ne!(flags & FLAG_CHECKED, 0);
+                saw_checked_cb = true;
+            }
+            if kind == KIND_INPUT && extra == "plan\tpro\tradio" {
+                assert_ne!(flags & FLAG_CHECKED, 0);
+                saw_checked_radio = true;
+            }
+            if kind == KIND_INPUT && extra == "plan\tfree\tradio" {
+                assert_eq!(flags & FLAG_CHECKED, 0);
+                saw_unchecked_radio = true;
+            }
+            if kind == KIND_INPUT && extra.starts_with("country\tVietnam\tselect\t") {
+                assert_eq!(text, "vn");
+                assert!(extra.contains("us\x1eUnited States\x1fvn\x1eVietnam"));
+                saw_select = true;
+            }
+        }
+        assert!(saw_lead);
+        assert!(saw_checked_cb);
+        assert!(saw_checked_radio);
+        assert!(saw_unchecked_radio);
+        assert!(saw_select);
     }
 }

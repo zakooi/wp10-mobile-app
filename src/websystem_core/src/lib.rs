@@ -2,7 +2,7 @@ mod http_client;
 mod js_engine;
 mod layout_engine;
 
-use http_client::{execute_http_request, WsHttpResponse};
+use http_client::{clear_http_cookies, execute_http_request, WsHttpResponse};
 use js_engine::{execute_page_scripts, extract_script_urls};
 use layout_engine::{
     extract_stylesheet_urls, render_html_with_options, RenderOptions, WsRenderBuffer,
@@ -245,6 +245,12 @@ pub extern "C" fn ws_http_response_free(resp: *mut WsHttpResponse) {
             drop(Box::from_raw(resp));
         }
     }
+}
+
+/// Resets the shared `ureq` agent so accumulated in-memory cookies are cleared.
+#[no_mangle]
+pub extern "C" fn ws_http_clear_cookies() {
+    clear_http_cookies();
 }
 
 /// Extracts newline-separated resolved `<link rel="stylesheet" href="...">` URLs from HTML.

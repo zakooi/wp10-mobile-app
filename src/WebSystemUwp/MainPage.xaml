@@ -340,6 +340,15 @@
                         <TextBlock x:Name="RustInputPromptLabel" Text="Nhập nội dung" FontSize="13" FontWeight="SemiBold" Foreground="#8AB4F8" Margin="0,0,0,8" TextWrapping="Wrap" />
                         <TextBox x:Name="RustInputEditorBox" PlaceholderText="Nhập văn bản..." Background="#2A2A2A" Foreground="#FFFFFF" BorderBrush="#4A4A4A" FontSize="14" KeyDown="RustInputEditor_KeyDown" Margin="0,0,0,10" />
                         <PasswordBox x:Name="RustInputPasswordBox" PlaceholderText="Nhập mật khẩu..." Background="#2A2A2A" Foreground="#FFFFFF" BorderBrush="#4A4A4A" FontSize="14" Visibility="Collapsed" KeyDown="RustInputEditor_KeyDown" Margin="0,0,0,10" />
+                        <ListView x:Name="RustSelectListView" Visibility="Collapsed" MaxHeight="260" SelectionMode="None" IsItemClickEnabled="True" ItemClick="RustSelectListView_ItemClick" Margin="0,0,0,10">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#2A2A2A" CornerRadius="6" Padding="10,8" Margin="0,0,0,4">
+                                        <TextBlock Text="{Binding Label}" Foreground="#FFFFFF" FontSize="14" TextWrapping="Wrap" />
+                                    </Border>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -347,8 +356,8 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Button Grid.Column="0" Content="Hủy" Click="RustInputCancel_Click" Background="#333333" Foreground="#E0E0E0" HorizontalAlignment="Left" />
-                            <Button Grid.Column="1" Content="Xong" Click="RustInputDone_Click" Background="#3A3A3A" Foreground="#FFFFFF" Margin="0,0,8,0" />
-                            <Button Grid.Column="2" Content="Gửi / Tìm" Click="RustInputSubmit_Click" Background="#8AB4F8" Foreground="#121212" FontWeight="Bold" />
+                            <Button x:Name="RustInputDoneButton" Grid.Column="1" Content="Xong" Click="RustInputDone_Click" Background="#3A3A3A" Foreground="#FFFFFF" Margin="0,0,8,0" />
+                            <Button x:Name="RustInputSubmitButton" Grid.Column="2" Content="Gửi / Tìm" Click="RustInputSubmit_Click" Background="#8AB4F8" Foreground="#121212" FontWeight="Bold" />
                         </Grid>
                     </StackPanel>
                 </Border>

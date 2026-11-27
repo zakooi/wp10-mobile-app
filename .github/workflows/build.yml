@@ -160,6 +160,20 @@ jobs:
           files: release_files/*
           generate_release_notes: true
 
+      - name: Clean Stale Test Build Assets
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view test-build --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            for asset in $(gh release view test-build --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+              if [ ! -f "release_files/$asset" ]; then
+                echo "Deleting stale release asset: $asset"
+                gh release delete-asset test-build "$asset" --repo "$GITHUB_REPOSITORY" --yes || true
+              fi
+            done
+          fi
+
       - name: Create or Update Test Build Release
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: softprops/action-gh-release@v2

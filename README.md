@@ -1,86 +1,64 @@
-# wp10-mobile-app
+# wp10-mobile-app (WebSystem Chrome)
 
-Ứng dụng **Windows 10 Mobile (UWP)** — ưu tiên **web hiện đại** (HttpClient, TLS 1.2+, HTTP/2),
-kèm phần **thông tin thiết bị** hợp lệ.
+Ứng dụng trình duyệt **Windows 10 Mobile (UWP)** kiến trúc kép: kết hợp **WebView** hệ thống với lõi **Rust Native Browser Core (`websystem_core.dll`) + Win2D (`CanvasVirtualControl`)** để vượt qua giới hạn TLS/HTML/JS cũ trên Windows 10 Mobile (bản cuối 10.0.15254 / 1709).
 
-> **Cảnh báo nền tảng:** Windows 10 Mobile đã hết hỗ trợ/update (bản cuối 10.0.15254, 1709).
-> Mã nguồn dùng mô hình UWP chuẩn; bạn build bằng Visual Studio 2017/2019 + Windows 10 SDK
-> 10.0.19041 (MinVersion 10.0.14393). Xem `DECISIONS.md` để biết điểm lệch và giới hạn.
+> **Lưu ý nền tảng:** Windows 10 Mobile đã hết hỗ trợ từ Microsoft. Mã nguồn target Windows 10 SDK `10.0.19041.0` (`MinVersion=10.0.14393.0`) để build được trên Visual Studio 2019/2022 và GitHub Actions (`windows-2022`), trong khi vẫn cài được lên máy Windows 10 Mobile ARM thật.
 
-## Tính năng
+## Kiến trúc & Tính năng chính
 
-- **Web** (`Services/WebService.cs`): gọi HTTP/HTTPS bằng `HttpClient`. Hỗ trợ TLS 1.2+/HTTP/2
-  (Schannel hiện đại) → kết nối website hiện đại tốt hơn nhiều so với WP8. Hiển thị nội dung trả về,
-  bắt lỗi rõ ràng, hủy khi quá thời gian chờ.
-- **Hệ thống** (`Services/SystemInterop.cs`):
-  - **Thông tin thiết bị** — `Package.Current`, `DeviceInformation`, phiên bản OS, kiến trúc (hợp lệ, cần ít quyền).
-  - **Registry / FullTrust** — *KHÔNG khả thi trên mobile*: UWP bị giới hạn AppContainer, và
-    Windows 10 Mobile không hỗ trợ desktop bridge `runFullTrust`. App chỉ giải thích điều này thay vì lỗi im lặng.
+- **Lõi Rust (`src/websystem_core/`):**
+  - **HTTP/TLS 1.3 (`http_client.rs`):** `ureq` + `rustls` + `rustls-rustcrypto` + `WebPKI` + cookie jar trong phiên, hỗ trợ HTTP/HTTPS hiện đại độc lập với Schannel cũ của phone.
+  - **JavaScript Sandbox (`js_engine.rs`):** nhúng `boa_engine` (ES6+) với DOM sandbox, `DocumentFragment`, `addEventListener`/`click()`, `setTimeout`/`clearTimeout`, `document.cookie`, `URL`/`URLSearchParams`, dynamic inline `<script>`, giới hạn vòng lặp chống treo máy 1 GB RAM.
+  - **HTML/CSS Layout (`layout_engine.rs`):** `scraper` (`html5ever`) + `taffy` (Flexbox/Block), parser CSS (class/id/tag, combinator `>`/descendant, `[attr]`, `@media`, `rgba()`), Reader Mode, chặn quảng cáo/cookie banner, form controls (`input`, `textarea`, `checkbox`, `radio`, `select`), xuất display list nhị phân `WSR2`.
+- **Ứng dụng UWP (`src/WebSystemUwp/`):**
+  - Giao diện kiểu Chrome tối ưu màn hình nhỏ Lumia: đa tab, Omnibox, thanh điều hướng tự ẩn, nút Dừng/Tải lại, Bookmarks, Lịch sử, Lưu trang Offline, Tìm trong trang, Dark Mode, Zoom, User-Agent switcher.
+  - **Win2D Direct2D Renderer (`MainPage.xaml.cs`, `RustEngineBridge.cs`):** vẽ `WSR2` trên `CanvasVirtualControl`, tải ảnh bất đồng bộ (HTTP/HTTPS + `data:image/...;base64`), tương tác link/anchor/form.
+  - **Công cụ & Chẩn đoán (`DeviceService.cs`, `DiagnosticsService.cs`, `WebService.cs`):** xem thông tin máy, RAM/Pin/mạng và test request trực tiếp qua Rust TLS hoặc `HttpClient`.
 
-## Cấu trúc
+## Cấu trúc thư mục
 
+```text
+src/
+  websystem_core/
+    Cargo.toml                 Cấu hình crate cdylib (ureq, rustls, scraper, taffy, boa_engine)
+    src/lib.rs                 FFI C-ABI (ws_core_*, ws_http_*, ws_render_html_v2, ...)
+    src/http_client.rs         HTTP/TLS 1.3 + cookie jar
+    src/js_engine.rs           Boa ES6+ DOM sandbox
+    src/layout_engine.rs       HTML5/CSS parser + Taffy layout + WSR2 serializer
+  WebSystemUwp/
+    MainPage.xaml / .cs        UI Chrome + Win2D renderer + tương tác form/tab
+    Services/RustEngineBridge.cs   P/Invoke sang websystem_core.dll & giải mã WSR2
+    Services/RustRenderModels.cs   Display list models
+    Services/WebService.cs         Điều phối Rust TLS / Schannel HttpClient
+    Services/DeviceService.cs, DiagnosticsService.cs, CacheService.cs, ...
+    WebSystemUwp.csproj        Project UWP (uap10.0.19041)
+scripts/
+  build-rust-core.ps1          Build websystem_core.dll (ARM/x86/x64) qua Rust Nightly
+  generate-assets.ps1          Sinh placeholder PNG vào Assets/ khi cần
+  sign-appx.ps1                Ký .appx bằng signtool
+.github/workflows/build.yml    CI chạy Rust unit tests, build ARM + x86 .appx, tạo GitHub Release
 ```
-src/WebSystemUwp/
-  App.xaml / App.xaml.cs            Khởi động + Frame + navigation
-  MainPage.xaml / .cs               Pivot "Web" + "Hệ thống"
-  Services/WebService.cs            HttpClient (web hiện đại)
-  Services/SystemInterop.cs         Thông tin thiết bị + đánh giá giới hạn AppContainer
-  Package.appxmanifest              Identity + Capabilities (internetClient)
-  WebSystemUwp.csproj               Project UWP (uap10.0.19041)
-  Assets/                           Placeholder logos (thêm PNG khi build)
+
+## Build & Deploy
+
+### 1. Build tự động bằng GitHub Actions (khuyên dùng)
+Khi push lên `main` (hoặc tag `v*`):
+- Chạy `cargo test --lib` cho `websystem_core` trên `x86`.
+- Build `websystem_core.dll` (Rust Nightly `-Z build-std=std,panic_abort`) và đóng gói `.appx` cho **ARM** + **x86**.
+- Ký gói `.appx` (dùng secrets `CERT_BASE64` + `CERT_PASSPHRASE`, hoặc tự tạo test certificate `WebSystemUwp.cer`).
+- Đóng gói release `test-build` gồm `WebSystemUwp_ARM.appx`, `WebSystemUwp.cer` và các gói dependency.
+
+### 2. Build local trên Windows
+Yêu cầu: Windows 10/11, Visual Studio 2019/2022 (workload **UWP development** + C++ ARM tools + Windows 10 SDK `10.0.19041.0`), và Rust Nightly có component `rust-src`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-rust-core.ps1 -Platform ARM -Configuration Release
 ```
 
-## Yêu cầu build
+Sau đó mở `src\WebSystemUwp\WebSystemUwp.csproj` trong Visual Studio, chọn `ARM | Release` và Deploy lên máy Windows 10 Mobile đã bật **Developer Mode**.
 
-1. Windows 10 + Visual Studio 2017/2019 (workload **Universal Windows Platform development**).
-   Cài **Windows 10 SDK 10.0.19041** (MinVersion 10.0.14393).
-2. Mở `WebSystemUwp.csproj`. Thêm nội dung placeholder vào `Assets/` nếu build báo thiếu logo
-   (`Square150x150Logo.png`, `Square44x44Logo.png`, `StoreLogo.png`, `SplashScreen.png`).
-3. Build → file `.appx`. Deploy lên emulator W10M hoặc máy thật đã bật developer mode + sideload.
+## Giới hạn hiện tại
 
-## Build bằng GitHub Actions (CI)
-
-Thư mục `.github/workflows/build.yml` tự động build + đóng gói `.appx` khi bạn `git push` lên GitHub.
-Runner dùng `windows-2019` (có sẵn VS 2019 + Windows 10 SDK 10.0.19041 — project đã retarget sang SDK này).
-
-- **Kết quả:** tải file `.appx` về từ mục **Artifacts** của run.
-- **Không chạy emulator W10M trên CI** (runner không hỗ trợ Hyper-V/nested virtualization). CI chỉ
-  compile + đóng gói; bạn tự sideload ở máy local.
-- **Cần Assets trước khi build:** bước đóng gói yêu cầu `Assets/*.png` tồn tại. Tạo placeholder bằng:
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts\generate-assets.ps1
-  ```
-  hoặc thay bằng logo thật.
-- **Platform:** workflow build **matrix** `x86` + `ARM`. Gói **ARM** là gói cài được lên máy W10M thật
-  (`WebSystemUwp-ARM`); gói `x86` chỉ để kiểm tra biên dịch.
-- **Chữ ký:** gói được ký **tự động** nếu bạn đặt secrets `CERT_BASE64` (Base64 của `.pfx`) +
-  `CERT_PASSPHRASE`. Nếu không đặt, gói là **unsigned** → cần ký tay hoặc dùng VS Deploy.
-
-> **Lưu ý:** Windows 10 Mobile đã hết hỗ trợ (bản cuối 10.0.15254). CI build được, nhưng môi trường
-> chạy thử cần bạn tự chuẩn bị (máy W10M thật hoặc emulator). Xem `DECISIONS.md`.
-
-## Deploy lên thiết bị thật (Windows 10 Mobile)
-
-Vì bạn có máy W10M thật (ARM), bạn cần **gói ARM đã ký chữ ký** và **bật Developer Mode** trên máy.
-
-1. **Bật Developer Mode:** Cài đặt → Cập nhật & bảo mật → Dành cho nhà phát triển → **Chế độ nhà phát triển**.
-   Bật USB debugging, cắm máy qua USB.
-
-2. **Cách A — Deploy bằng Visual Studio (khuyên dùng):** Build **Platform = ARM** rồi **Build → Deploy**.
-   VS tự ký bằng *developer certificate* và cài cert lên máy trong quá trình deploy — ít rắc rối nhất.
-
-3. **Cách B — Dùng artifact từ GitHub Actions:**
-   - Đặt secrets `CERT_BASE64` (Base64 của file `.pfx`) và `CERT_PASSPHRASE` → workflow tự ký gói ARM.
-   - Tải artifact `WebSystemUwp-ARM`, cài cert vào máy (trusted), rồi sideload bằng `Add-AppxPackage`
-     (PowerShell) hoặc công cụ deploy.
-   - Nếu **không** đặt secrets, artifact là gói **unsigned** → dùng Cách A hoặc ký tay bằng
-     `scripts\sign-appx.ps1`.
-
-**Lưu ý:** Cần gói **ARM** cho máy phổ thông. Windows 10 Mobile đã hết hỗ trợ (bản cuối 10.0.15254/1709)
-nhưng vẫn sideload được khi bật Developer Mode.
-
-## Giới hạn cần biết
-
-- **Web:** hoạt động tốt với website hiện đại. Vẫn cần kết nối mạng thật (emulator dùng mạng host khi bật).
-- **Hệ thống:** registry/FullTrust **không mở được trên Windows 10 Mobile**. Đây là giới hạn thiết kế của
-  Windows (AppContainer + không có desktop bridge trên phone), không phải bug.
+- **Chưa test runtime trực tiếp trên máy ARM thật trong CI:** CI chỉ xác minh biên dịch và chạy unit test trên `x86`.
+- **JS là static pass lúc tải trang:** `fetch` bị vô hiệu trong layout pass, chưa hỗ trợ SPA/DOM event tương tác liên tục sau khi trang đã render xong.
+- **AppContainer trên phone:** Không thể đọc/ghi registry hệ thống hay dùng `runFullTrust` trên Windows 10 Mobile.

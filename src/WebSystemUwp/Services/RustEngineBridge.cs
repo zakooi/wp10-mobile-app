@@ -28,7 +28,7 @@ namespace WebSystemUwp.Services
     {
         private const string NativeDllName = "websystem_core.dll";
         private const int DefaultBufferSize = 1024;
-        private const int MaxExternalResources = 4;
+        private const int MaxExternalResources = 6;
         private const int MaxExternalCssBytes = 512 * 1024;
         private const int MaxExternalJsBytes = 256 * 1024;
         private const string ScriptChunkSeparator = "\n/*__WS_SCRIPT_SEP__*/\n";
@@ -97,6 +97,9 @@ namespace WebSystemUwp.Services
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern void ws_http_response_free(IntPtr resp);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void ws_http_clear_cookies();
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern int ws_extract_stylesheets(
@@ -211,6 +214,16 @@ namespace WebSystemUwp.Services
                     ErrorMessage = ex.GetType().Name + ": " + ex.Message
                 };
             }
+        }
+
+        public static void ClearCookies()
+        {
+            if (!IsAvailable) return;
+            try
+            {
+                ws_http_clear_cookies();
+            }
+            catch { }
         }
 
         public static string GetCoreStatusSummary()
@@ -777,6 +790,7 @@ namespace WebSystemUwp.Services
                         IsPassword = (flags & 8) != 0,
                         IsMultiline = (flags & 16) != 0,
                         CenterText = (flags & 32) != 0,
+                        IsChecked = (flags & 64) != 0,
                         X = x,
                         Y = y,
                         Width = w,

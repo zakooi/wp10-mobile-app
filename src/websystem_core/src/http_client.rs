@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 use ureq::{http, Agent, Error, ResponseExt};
@@ -17,23 +17,37 @@ pub struct WsHttpResponse {
     pub body: Vec<u8>,
 }
 
-fn shared_agent() -> &'static Agent {
-    static AGENT: OnceLock<Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        let crypto = Arc::new(rustls_rustcrypto::provider());
-        let tls = TlsConfig::builder()
-            .provider(TlsProvider::Rustls)
-            .unversioned_rustls_crypto_provider(crypto)
-            .root_certs(RootCerts::WebPki)
-            .build();
+fn agent_slot() -> &'static Mutex<Option<Arc<Agent>>> {
+    static AGENT: OnceLock<Mutex<Option<Arc<Agent>>>> = OnceLock::new();
+    AGENT.get_or_init(|| Mutex::new(None))
+}
 
+fn build_agent() -> Arc<Agent> {
+    let crypto = Arc::new(rustls_rustcrypto::provider());
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::Rustls)
+        .unversioned_rustls_crypto_provider(crypto)
+        .root_certs(RootCerts::WebPki)
+        .build();
+
+    Arc::new(
         Agent::config_builder()
             .tls_config(tls)
             .http_status_as_error(false)
             .max_redirects(10)
             .build()
-            .new_agent()
-    })
+            .new_agent(),
+    )
+}
+
+fn shared_agent() -> Arc<Agent> {
+    let mut guard = agent_slot().lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(build_agent).clone()
+}
+
+pub fn clear_http_cookies() {
+    let mut guard = agent_slot().lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
 }
 
 fn classify_ureq_error(err: &Error) -> (&'static str, String) {
@@ -156,7 +170,7 @@ pub fn execute_http_request(
         (max_body_bytes as u64).clamp(1024, MAX_RESPONSE_BODY_BYTES)
     };
 
-    match run_with_timeout(agent, req, clamped_timeout) {
+    match run_with_timeout(&agent, req, clamped_timeout) {
         Ok(mut response) => {
             let status_code = response.status().as_u16() as i32;
             let final_url = response.get_uri().to_string();

@@ -52,6 +52,8 @@ namespace WebSystemUwp
         private readonly Dictionary<int, CanvasTextFormat> _textFormats = new Dictionary<int, CanvasTextFormat>();
         private readonly Dictionary<string, CanvasBitmap> _rustImageCache = new Dictionary<string, CanvasBitmap>(StringComparer.OrdinalIgnoreCase);
         private bool _isRustReaderMode;
+        private bool _isRustLoading;
+        private bool _isApplyingSettings;
         private RenderDisplayItem _editingRustInput;
         private string _rustFindQuery = string.Empty;
         private readonly List<int> _rustFindMatchIndices = new List<int>();
@@ -145,6 +147,7 @@ namespace WebSystemUwp
 
         private void ApplySettingsToUI()
         {
+            _isApplyingSettings = true;
             try
             {
                 MenuToggleRustEngine.IsChecked = SettingsService.UseRustBrowserEngine && RustEngineBridge.IsAvailable;
@@ -170,6 +173,10 @@ namespace WebSystemUwp
                 }
             }
             catch {}
+            finally
+            {
+                _isApplyingSettings = false;
+            }
         }
 
         // =========================================================================
@@ -196,6 +203,7 @@ namespace WebSystemUwp
 
             if (tab.Url == NewTabHomeUrl)
             {
+                StopRustLoadingUi();
                 NewTabHomeView.Visibility = Visibility.Visible;
                 BrowserWebView.Visibility = Visibility.Collapsed;
                 RustViewportContainer.Visibility = Visibility.Collapsed;
@@ -214,7 +222,7 @@ namespace WebSystemUwp
                 OmniLockIcon.Text = tab.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? "\uE72E" : "\uE7BA";
                 UpdateBookmarkStarStatus(tab.Url);
                 UpdateOmniboxDisplay();
-                RenewRustNavToken();
+                StopRustLoadingUi();
                 DisplayRustPage(tab.RenderedPage);
                 UpdateNavButtons();
                 ShowBottomNavBar();
@@ -395,6 +403,8 @@ namespace WebSystemUwp
             ulong seq = ++_rustNavSeq;
             CancellationToken ct = RenewRustNavToken();
             _isRustReaderMode = false;
+            _isRustLoading = true;
+            BottomRefreshIcon.Text = "\uE10A";
             RustFallbackBanner.Visibility = Visibility.Collapsed;
             RustInputOverlay.Visibility = Visibility.Collapsed;
             BrowserProgressBar.Visibility = Visibility.Visible;
@@ -447,6 +457,8 @@ namespace WebSystemUwp
             {
                 if (seq == _rustNavSeq)
                 {
+                    _isRustLoading = false;
+                    BottomRefreshIcon.Text = "\uE149";
                     BrowserProgressBar.Visibility = Visibility.Collapsed;
                     BrowserProgressBar.IsIndeterminate = false;
                     if (SettingsService.AutoHideBottomBar)
@@ -519,18 +531,98 @@ namespace WebSystemUwp
             }
         }
 
+        private async Task<CanvasBitmap> LoadBitmapFromBytesAsync(byte[] bytes, ulong navSeq, CancellationToken ct, RustRenderPage page)
+        {
+            if (bytes == null || bytes.Length == 0 || bytes.Length > 2 * 1024 * 1024)
+            {
+                return null;
+            }
+            try
+            {
+                using (var ras = new InMemoryRandomAccessStream())
+                {
+                    using (var writer = new DataWriter(ras.GetOutputStreamAt(0)))
+                    {
+                        writer.WriteBytes(bytes);
+                        await writer.StoreAsync();
+                    }
+                    ras.Seek(0);
+                    var bmp = await CanvasBitmap.LoadAsync(RustVirtualCanvas, ras);
+                    if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page)
+                    {
+                        bmp.Dispose();
+                        return null;
+                    }
+                    return bmp;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static byte[] TryDecodeDataImageBase64(string dataUri)
+        {
+            if (string.IsNullOrEmpty(dataUri) ||
+                !dataUri.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            int commaIdx = dataUri.IndexOf(',');
+            if (commaIdx <= 0) return null;
+            string meta = dataUri.Substring(0, commaIdx);
+            if (meta.IndexOf(";base64", StringComparison.OrdinalIgnoreCase) < 0 ||
+                meta.IndexOf("svg", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return null;
+            }
+            try
+            {
+                return Convert.FromBase64String(dataUri.Substring(commaIdx + 1));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private async void LoadRustPageImagesAsync(RustRenderPage page, ulong navSeq, CancellationToken ct)
         {
             if (page == null) return;
 
-            var imageUrls = page.Items
-                .Where(i => i.Kind == RenderItemKind.Image &&
-                            !string.IsNullOrWhiteSpace(i.Href) &&
-                            (i.Href.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                             i.Href.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+            var allSources = page.Items
+                .Where(i => i.Kind == RenderItemKind.Image && !string.IsNullOrWhiteSpace(i.Href))
                 .Select(i => i.Href)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(20)
+                .Take(32)
+                .ToList();
+
+            if (allSources.Count == 0) return;
+
+            bool anyInlineLoaded = false;
+            foreach (var src in allSources)
+            {
+                if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
+                byte[] inlineBytes = TryDecodeDataImageBase64(src);
+                if (inlineBytes != null)
+                {
+                    var bmp = await LoadBitmapFromBytesAsync(inlineBytes, navSeq, ct, page);
+                    if (bmp != null)
+                    {
+                        _rustImageCache[src] = bmp;
+                        anyInlineLoaded = true;
+                    }
+                }
+            }
+            if (anyInlineLoaded && !ct.IsCancellationRequested && navSeq == _rustNavSeq && _activeRustPage == page)
+            {
+                RustVirtualCanvas.Invalidate();
+            }
+
+            var imageUrls = allSources
+                .Where(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                            u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             if (imageUrls.Count == 0) return;
@@ -561,30 +653,14 @@ namespace WebSystemUwp
                 {
                     if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
                     var resp = responses[b];
-                    if (resp == null || !resp.IsSuccess || resp.RawBytes == null || resp.RawBytes.Length == 0 || resp.RawBytes.Length > 2 * 1024 * 1024)
-                        continue;
+                    if (resp == null || !resp.IsSuccess) continue;
 
-                    try
+                    var bmp = await LoadBitmapFromBytesAsync(resp.RawBytes, navSeq, ct, page);
+                    if (bmp != null)
                     {
-                        using (var ras = new InMemoryRandomAccessStream())
-                        {
-                            using (var writer = new DataWriter(ras.GetOutputStreamAt(0)))
-                            {
-                                writer.WriteBytes(resp.RawBytes);
-                                await writer.StoreAsync();
-                            }
-                            ras.Seek(0);
-                            var bmp = await CanvasBitmap.LoadAsync(RustVirtualCanvas, ras);
-                            if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page)
-                            {
-                                bmp.Dispose();
-                                return;
-                            }
-                            _rustImageCache[batch[b]] = bmp;
-                            anyLoaded = true;
-                        }
+                        _rustImageCache[batch[b]] = bmp;
+                        anyLoaded = true;
                     }
-                    catch { }
                 }
 
                 if (anyLoaded && !ct.IsCancellationRequested && navSeq == _rustNavSeq && _activeRustPage == page)
@@ -687,31 +763,65 @@ namespace WebSystemUwp
                         }
                         else if (item.Kind == RenderItemKind.Input)
                         {
-                            float radius = 4.0f * scale;
-                            ds.FillRoundedRectangle(rect, radius, radius, item.BackgroundColor);
-                            ds.DrawRoundedRectangle(rect, radius, radius, item.BorderColor, 1.2f);
-
-                            string placeholder = item.GetExtraPart(1);
                             string inputType = item.GetExtraPart(2);
-                            string displayStr = item.Text;
-                            bool isPlaceholder = string.IsNullOrEmpty(displayStr);
-                            if (isPlaceholder)
+                            if (inputType == "checkbox")
                             {
-                                displayStr = string.IsNullOrEmpty(placeholder) ? "Chạm để nhập..." : placeholder;
+                                float radius = 4.0f * scale;
+                                Color boxBg = item.IsChecked ? item.ForegroundColor : item.BackgroundColor;
+                                Color boxBorder = item.IsChecked ? item.ForegroundColor : item.BorderColor;
+                                ds.FillRoundedRectangle(rect, radius, radius, boxBg);
+                                ds.DrawRoundedRectangle(rect, radius, radius, boxBorder, 1.4f);
+                                if (item.IsChecked)
+                                {
+                                    var chkFmt = GetCachedTextFormat(item.FontSize * scale, true, false, true);
+                                    ds.DrawText("✓", rect, Colors.White, chkFmt);
+                                }
                             }
-                            else if (item.IsPassword)
+                            else if (inputType == "radio")
                             {
-                                displayStr = new string('•', Math.Min(displayStr.Length, 24));
+                                float cx = x + w * 0.5f;
+                                float cy = y + h * 0.5f;
+                                float rOuter = Math.Min(w, h) * 0.45f;
+                                Color ringCol = item.IsChecked ? item.ForegroundColor : item.BorderColor;
+                                ds.FillEllipse(cx, cy, rOuter, rOuter, item.BackgroundColor);
+                                ds.DrawEllipse(cx, cy, rOuter, rOuter, ringCol, 1.5f);
+                                if (item.IsChecked)
+                                {
+                                    ds.FillEllipse(cx, cy, rOuter * 0.52f, rOuter * 0.52f, item.ForegroundColor);
+                                }
                             }
-                            else if (inputType == "select")
+                            else
                             {
-                                displayStr = "▾ " + displayStr;
-                            }
+                                float radius = 4.0f * scale;
+                                ds.FillRoundedRectangle(rect, radius, radius, item.BackgroundColor);
+                                ds.DrawRoundedRectangle(rect, radius, radius, item.BorderColor, 1.2f);
 
-                            Color fg = isPlaceholder ? Color.FromArgb(255, 138, 143, 150) : item.ForegroundColor;
-                            var fmt = GetCachedTextFormat(item.FontSize * scale, false, false, false);
-                            var textRect = new Rect(x + 8 * scale, y + 8 * scale, Math.Max(10, w - 16 * scale), Math.Max(10, h - 12 * scale));
-                            ds.DrawText(displayStr, textRect, fg, fmt);
+                                string placeholder = item.GetExtraPart(1);
+                                string displayStr;
+                                bool isPlaceholder = false;
+                                if (inputType == "select")
+                                {
+                                    displayStr = "▾ " + item.GetSelectDisplayLabel();
+                                }
+                                else
+                                {
+                                    displayStr = item.Text;
+                                    isPlaceholder = string.IsNullOrEmpty(displayStr);
+                                    if (isPlaceholder)
+                                    {
+                                        displayStr = string.IsNullOrEmpty(placeholder) ? "Chạm để nhập..." : placeholder;
+                                    }
+                                    else if (item.IsPassword)
+                                    {
+                                        displayStr = new string('•', Math.Min(displayStr.Length, 24));
+                                    }
+                                }
+
+                                Color fg = isPlaceholder ? Color.FromArgb(255, 138, 143, 150) : item.ForegroundColor;
+                                var fmt = GetCachedTextFormat(item.FontSize * scale, false, false, false);
+                                var textRect = new Rect(x + 8 * scale, y + 8 * scale, Math.Max(10, w - 16 * scale), Math.Max(10, h - 12 * scale));
+                                ds.DrawText(displayStr, textRect, fg, fmt);
+                            }
                         }
                         else if (item.Kind == RenderItemKind.Button)
                         {
@@ -792,6 +902,38 @@ namespace WebSystemUwp
 
                     if (item.Kind == RenderItemKind.Input)
                     {
+                        string inputType = item.GetExtraPart(2);
+                        if (inputType == "checkbox")
+                        {
+                            item.IsChecked = !item.IsChecked;
+                            RustVirtualCanvas.Invalidate();
+                            return;
+                        }
+                        if (inputType == "radio")
+                        {
+                            string radioName = item.GetExtraPart(0);
+                            foreach (var other in _activeRustPage.Items)
+                            {
+                                if (other.Kind == RenderItemKind.Input &&
+                                    other.FormId == item.FormId &&
+                                    other.GetExtraPart(2) == "radio" &&
+                                    string.Equals(other.GetExtraPart(0), radioName, StringComparison.Ordinal))
+                                {
+                                    other.IsChecked = (other == item);
+                                }
+                            }
+                            RustVirtualCanvas.Invalidate();
+                            return;
+                        }
+                        if (inputType == "select")
+                        {
+                            var options = item.GetSelectOptions();
+                            if (options.Count > 0)
+                            {
+                                OpenRustSelectPicker(item, options);
+                                return;
+                            }
+                        }
                         OpenRustInputEditor(item);
                         return;
                     }
@@ -814,19 +956,29 @@ namespace WebSystemUwp
                     if (item.Kind == RenderItemKind.Image)
                     {
                         string linkHref = item.GetExtraPart(0);
-                        if (!string.IsNullOrEmpty(linkHref) &&
-                            !linkHref.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) &&
-                            !linkHref.StartsWith("#"))
+                        if (!string.IsNullOrEmpty(linkHref))
                         {
-                            NavigateBrowser(linkHref);
-                            return;
+                            if (linkHref.StartsWith("#"))
+                            {
+                                ScrollToRustAnchor(linkHref, scale);
+                                return;
+                            }
+                            if (!linkHref.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                NavigateBrowser(linkHref);
+                                return;
+                            }
                         }
                     }
 
                     if (item.Kind == RenderItemKind.Link && !string.IsNullOrEmpty(item.Href))
                     {
-                        if (!item.Href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) &&
-                            !item.Href.StartsWith("#"))
+                        if (item.Href.StartsWith("#"))
+                        {
+                            ScrollToRustAnchor(item.Href, scale);
+                            return;
+                        }
+                        if (!item.Href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
                         {
                             NavigateBrowser(item.Href);
                             return;
@@ -838,6 +990,56 @@ namespace WebSystemUwp
             ShowBottomNavBar();
         }
 
+        private void ScrollToRustAnchor(string anchorHref, float scale)
+        {
+            if (_activeRustPage == null) return;
+            string frag = anchorHref.TrimStart('#').Trim();
+            if (string.IsNullOrEmpty(frag) || frag.Equals("top", StringComparison.OrdinalIgnoreCase))
+            {
+                RustBrowserScrollViewer.ChangeView(null, 0, null, false);
+                return;
+            }
+
+            string needle = frag.Replace('-', ' ').Replace('_', ' ');
+            foreach (var target in _activeRustPage.Items)
+            {
+                if ((target.Kind == RenderItemKind.Text || target.Kind == RenderItemKind.Link) &&
+                    !string.IsNullOrEmpty(target.Text) &&
+                    target.Text.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    double targetY = Math.Max(0, target.Y * scale - 24);
+                    RustBrowserScrollViewer.ChangeView(null, targetY, null, false);
+                    return;
+                }
+            }
+        }
+
+        private void OpenRustSelectPicker(RenderDisplayItem selectItem, List<RustSelectOption> options)
+        {
+            _editingRustInput = selectItem;
+            string name = selectItem.GetExtraPart(0);
+            RustInputPromptLabel.Text = !string.IsNullOrEmpty(name) ? $"Chọn giá trị ({name}):" : "Chọn giá trị:";
+            RustInputEditorBox.Visibility = Visibility.Collapsed;
+            RustInputPasswordBox.Visibility = Visibility.Collapsed;
+            RustInputDoneButton.Visibility = Visibility.Collapsed;
+            RustInputSubmitButton.Visibility = Visibility.Collapsed;
+            RustSelectListView.ItemsSource = options;
+            RustSelectListView.Visibility = Visibility.Visible;
+            RustInputOverlay.Visibility = Visibility.Visible;
+        }
+
+        private void RustSelectListView_ItemClick(object sender, ItemClickEventArgs e)
+        {
+            if (_editingRustInput != null && e.ClickedItem is RustSelectOption opt)
+            {
+                _editingRustInput.Text = opt.Value;
+                RustVirtualCanvas.Invalidate();
+            }
+            RustInputOverlay.Visibility = Visibility.Collapsed;
+            RustSelectListView.Visibility = Visibility.Collapsed;
+            _editingRustInput = null;
+        }
+
         private void OpenRustInputEditor(RenderDisplayItem inputItem)
         {
             _editingRustInput = inputItem;
@@ -846,6 +1048,10 @@ namespace WebSystemUwp
             RustInputPromptLabel.Text = !string.IsNullOrEmpty(placeholder)
                 ? placeholder
                 : (!string.IsNullOrEmpty(name) ? $"Nhập giá trị ({name}):" : "Nhập nội dung:");
+
+            RustSelectListView.Visibility = Visibility.Collapsed;
+            RustInputDoneButton.Visibility = Visibility.Visible;
+            RustInputSubmitButton.Visibility = Visibility.Visible;
 
             if (inputItem.IsPassword)
             {
@@ -897,6 +1103,7 @@ namespace WebSystemUwp
         private void RustInputCancel_Click(object sender, RoutedEventArgs e)
         {
             RustInputOverlay.Visibility = Visibility.Collapsed;
+            RustSelectListView.Visibility = Visibility.Collapsed;
             _editingRustInput = null;
         }
 
@@ -916,7 +1123,15 @@ namespace WebSystemUwp
             {
                 if (item.Kind == RenderItemKind.Input && item.FormId == formId)
                 {
-                    item.Text = string.Empty;
+                    string inputType = item.GetExtraPart(2);
+                    if (inputType == "checkbox" || inputType == "radio")
+                    {
+                        item.IsChecked = false;
+                    }
+                    else
+                    {
+                        item.Text = string.Empty;
+                    }
                 }
             }
             RustVirtualCanvas.Invalidate();
@@ -966,7 +1181,16 @@ namespace WebSystemUwp
                 if (item.Kind == RenderItemKind.Input && item.FormId == formId)
                 {
                     string fName = item.GetExtraPart(0);
-                    if (!string.IsNullOrEmpty(fName))
+                    string fType = item.GetExtraPart(2);
+                    if (fType == "checkbox" || fType == "radio")
+                    {
+                        if (item.IsChecked && !string.IsNullOrEmpty(fName))
+                        {
+                            string fVal = !string.IsNullOrEmpty(item.Text) ? item.Text : "on";
+                            pairs.Add(Uri.EscapeDataString(fName) + "=" + Uri.EscapeDataString(fVal));
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(fName))
                     {
                         pairs.Add(Uri.EscapeDataString(fName) + "=" + Uri.EscapeDataString(item.Text ?? string.Empty));
                     }
@@ -1164,8 +1388,25 @@ namespace WebSystemUwp
             ShowBottomNavBar();
         }
 
+        private void StopRustLoadingUi()
+        {
+            _rustNavSeq++;
+            CancelPendingRustNav();
+            _isRustLoading = false;
+            BottomRefreshIcon.Text = "\uE149";
+            BrowserProgressBar.Visibility = Visibility.Collapsed;
+            BrowserProgressBar.IsIndeterminate = false;
+        }
+
         private void OmniRefreshButton_Click(object sender, RoutedEventArgs e)
         {
+            if (IsRustEngineActive && _isRustLoading)
+            {
+                StopRustLoadingUi();
+                ShowBottomNavBar();
+                return;
+            }
+
             if (IsRustEngineActive && _activeTab != null && _activeTab.Url != NewTabHomeUrl)
             {
                 NavigateBrowser(_activeTab.Url, pushHistory: false);
@@ -1416,6 +1657,7 @@ namespace WebSystemUwp
                     {
                         BrowserWebView.Visibility = Visibility.Collapsed;
                         RustViewportContainer.Visibility = Visibility.Visible;
+                        string ua = EngineOptimizer.UserAgents.TryGetValue(_currentUa, out var profileUa) ? profileUa : string.Empty;
                         var page = await RustEngineBridge.RenderHtmlAsync(
                             html,
                             item.Url,
@@ -1424,7 +1666,10 @@ namespace WebSystemUwp
                             string.Empty,
                             MenuToggleAdBlock.IsChecked,
                             MenuToggleImgBlock.IsChecked,
-                            false);
+                            false,
+                            string.Empty,
+                            ua,
+                            MenuToggleRustJs.IsChecked);
                         page.SourceHtml = html;
                         if (_activeTab != null) _activeTab.RenderedPage = page;
                         DisplayRustPage(page);
@@ -1743,12 +1988,22 @@ namespace WebSystemUwp
             if (_activeTab?.RenderedPage?.SourceHtml == null) return;
 
             var savedInputs = new Dictionary<string, string>(StringComparer.Ordinal);
+            var savedChecks = new Dictionary<string, bool>(StringComparer.Ordinal);
             foreach (var oldItem in _activeTab.RenderedPage.Items)
             {
                 if (oldItem.Kind == RenderItemKind.Input)
                 {
-                    string key = $"{oldItem.FormId}:{oldItem.GetExtraPart(0)}";
-                    savedInputs[key] = oldItem.Text ?? string.Empty;
+                    string fType = oldItem.GetExtraPart(2);
+                    if (fType == "checkbox" || fType == "radio")
+                    {
+                        string chkKey = $"{oldItem.FormId}:{fType}:{oldItem.GetExtraPart(0)}:{oldItem.GetExtraPart(1)}";
+                        savedChecks[chkKey] = oldItem.IsChecked;
+                    }
+                    else
+                    {
+                        string key = $"{oldItem.FormId}:{oldItem.GetExtraPart(0)}";
+                        savedInputs[key] = oldItem.Text ?? string.Empty;
+                    }
                 }
             }
 
@@ -1776,10 +2031,22 @@ namespace WebSystemUwp
             {
                 if (newItem.Kind == RenderItemKind.Input)
                 {
-                    string key = $"{newItem.FormId}:{newItem.GetExtraPart(0)}";
-                    if (savedInputs.TryGetValue(key, out var val))
+                    string fType = newItem.GetExtraPart(2);
+                    if (fType == "checkbox" || fType == "radio")
                     {
-                        newItem.Text = val;
+                        string chkKey = $"{newItem.FormId}:{fType}:{newItem.GetExtraPart(0)}:{newItem.GetExtraPart(1)}";
+                        if (savedChecks.TryGetValue(chkKey, out var isChecked))
+                        {
+                            newItem.IsChecked = isChecked;
+                        }
+                    }
+                    else
+                    {
+                        string key = $"{newItem.FormId}:{newItem.GetExtraPart(0)}";
+                        if (savedInputs.TryGetValue(key, out var val))
+                        {
+                            newItem.Text = val;
+                        }
                     }
                 }
             }
@@ -1901,6 +2168,7 @@ namespace WebSystemUwp
 
         private void SettingsSearchCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            if (_isApplyingSettings) return;
             if (SettingsSearchCombo.SelectedItem is ComboBoxItem item && item.Content != null)
             {
                 SettingsService.SearchEngine = item.Content.ToString();
@@ -1909,31 +2177,49 @@ namespace WebSystemUwp
 
         private void SettingsAutoHideToggle_Toggled(object sender, RoutedEventArgs e)
         {
+            if (_isApplyingSettings) return;
             SettingsService.AutoHideBottomBar = SettingsAutoHideToggle.IsOn;
             if (!SettingsService.AutoHideBottomBar) ShowBottomNavBar();
         }
 
         private void SettingsAdBlockToggle_Toggled(object sender, RoutedEventArgs e)
         {
+            if (_isApplyingSettings) return;
             SettingsService.AutoBlockAds = SettingsAdBlockToggle.IsOn;
             MenuToggleAdBlock.IsChecked = SettingsAdBlockToggle.IsOn;
+            if (IsRustEngineActive && _activeTab?.RenderedPage?.SourceHtml != null)
+            {
+                ReRenderCurrentRustHtmlAsync();
+            }
         }
 
         private void SettingsPolyfillsToggle_Toggled(object sender, RoutedEventArgs e)
         {
+            if (_isApplyingSettings) return;
             SettingsService.AutoInjectPolyfills = SettingsPolyfillsToggle.IsOn;
             MenuTogglePolyfills.IsChecked = SettingsPolyfillsToggle.IsOn;
         }
 
         private void SettingsDarkModeToggle_Toggled(object sender, RoutedEventArgs e)
         {
+            if (_isApplyingSettings) return;
             SettingsService.DarkModeDefault = SettingsDarkModeToggle.IsOn;
             MenuToggleDarkMode.IsChecked = SettingsDarkModeToggle.IsOn;
+            if (IsRustEngineActive && _activeTab?.RenderedPage?.SourceHtml != null)
+            {
+                ReRenderCurrentRustHtmlAsync();
+            }
         }
 
-        private void ClearAllBrowsingData_Click(object sender, RoutedEventArgs e)
+        private async void ClearAllBrowsingData_Click(object sender, RoutedEventArgs e)
         {
             HistoryService.ClearAll(_history);
+            RustEngineBridge.ClearCookies();
+            try
+            {
+                await WebView.ClearTemporaryWebDataAsync();
+            }
+            catch { }
             SettingsOverlay.Visibility = Visibility.Collapsed;
         }
 
