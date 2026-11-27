@@ -3128,7 +3128,7 @@ mod tests {
 
     #[test]
     fn test_google_style_svg_and_form_buttons() {
-        let html = r#"
+        let html = r##"
             <html><head><style>
                 .hidden-popup { visibility: hidden; }
             </style></head><body>
@@ -3147,7 +3147,7 @@ mod tests {
                     <textarea name="q" rows="1" placeholder="Ask Google"></textarea>
                 </form>
             </body></html>
-        "#;
+        "##;
         let buf = render_html_with_options(
             html,
             "https://www.google.com",

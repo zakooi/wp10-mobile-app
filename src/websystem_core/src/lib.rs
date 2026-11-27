@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_decode_svg_rgba_basic() {
-        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" fill="#ff0000"/></svg>"#;
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" fill="#ff0000"/></svg>"##;
         let img = decode_svg_rgba_str(svg, 48, 48).expect("svg should render");
         assert_eq!(img.width, 48);
         assert_eq!(img.height, 48);
