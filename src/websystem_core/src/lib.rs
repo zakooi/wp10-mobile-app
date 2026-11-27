@@ -528,10 +528,21 @@ fn decode_svg_rgba_str(svg_xml: &str, target_w: u32, target_h: u32) -> Option<Ws
         &mut pixmap.as_mut(),
     );
 
+    let mut rgba = pixmap.take();
+    for px in rgba.chunks_exact_mut(4) {
+        let a = px[3];
+        if a > 0 && a < 255 {
+            let af = a as u16;
+            px[0] = ((px[0] as u16 * 255 + af / 2) / af).min(255) as u8;
+            px[1] = ((px[1] as u16 * 255 + af / 2) / af).min(255) as u8;
+            px[2] = ((px[2] as u16 * 255 + af / 2) / af).min(255) as u8;
+        }
+    }
+
     Some(WsDecodedImage {
         width: out_w,
         height: out_h,
-        rgba: pixmap.take_demultiplied(),
+        rgba,
     })
 }
 
