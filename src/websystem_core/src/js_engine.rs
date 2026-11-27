@@ -16,7 +16,7 @@ enum DomKind {
         attrs: Vec<(String, String)>,
     },
     Text(String),
-    Comment(String),
+    Comment,
 }
 
 struct DomNode {
@@ -188,8 +188,8 @@ impl DomState {
                 let nid = self.alloc_node(DomKind::Text(t.to_string()), Some(parent_id));
                 self.nodes[parent_id].children.push(nid);
             }
-            Node::Comment(c) => {
-                let nid = self.alloc_node(DomKind::Comment(c.to_string()), Some(parent_id));
+            Node::Comment(_) => {
+                let nid = self.alloc_node(DomKind::Comment, Some(parent_id));
                 self.nodes[parent_id].children.push(nid);
             }
             _ => {}
@@ -704,7 +704,7 @@ impl DomState {
                     self.serialize_node(ch, out, false);
                 }
             }
-            DomKind::Comment(_) => {}
+            DomKind::Comment => {}
             DomKind::Text(t) => {
                 if raw_text {
                     out.push_str(t);
@@ -1885,7 +1885,7 @@ mod tests {
                     btn.click();
 
                     var cancelledId = setTimeout(function() {
-                        document.getElementById("out").textContent = "SHOULD_NOT_RUN";
+                        document.getElementById("out").textContent = "SHOULD_" + "NOT_RUN";
                     }, 10);
                     clearTimeout(cancelledId);
 
