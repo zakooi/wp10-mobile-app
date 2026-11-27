@@ -494,6 +494,66 @@ fn decode_webp_rgba_bytes(data: &[u8]) -> Option<WsDecodedImage> {
     })
 }
 
+fn decode_svg_rgba_str(svg_xml: &str, target_w: u32, target_h: u32) -> Option<WsDecodedImage> {
+    let opt = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_str(svg_xml, &opt).ok()?;
+    let tree_size = tree.size();
+    let src_w = tree_size.width();
+    let src_h = tree_size.height();
+    if src_w <= 0.0 || src_h <= 0.0 {
+        return None;
+    }
+
+    let out_w = if target_w > 0 {
+        target_w.clamp(8, 1024)
+    } else {
+        (src_w.round() as u32).clamp(8, 1024)
+    };
+    let out_h = if target_h > 0 {
+        target_h.clamp(8, 1024)
+    } else {
+        (src_h.round() as u32).clamp(8, 1024)
+    };
+
+    if (out_w as usize) * (out_h as usize) * 4 > MAX_DECODED_IMAGE_BYTES {
+        return None;
+    }
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(out_w, out_h)?;
+    let sx = out_w as f32 / src_w;
+    let sy = out_h as f32 / src_h;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(sx, sy),
+        &mut pixmap.as_mut(),
+    );
+
+    Some(WsDecodedImage {
+        width: out_w,
+        height: out_h,
+        rgba: pixmap.take_demultiplied(),
+    })
+}
+
+/// Decodes an SVG UTF-8 XML buffer into an RGBA8 pixel buffer (`WsDecodedImage`).
+#[no_mangle]
+pub extern "C" fn ws_decode_svg_rgba(
+    svg_ptr: *const u8,
+    svg_len: usize,
+    target_w: u32,
+    target_h: u32,
+) -> *mut WsDecodedImage {
+    // SAFETY: Caller guarantees `svg_ptr` is valid for `svg_len` bytes during this call.
+    let raw = unsafe { read_input_bytes(svg_ptr, svg_len) };
+    let Ok(svg_str) = str::from_utf8(raw) else {
+        return std::ptr::null_mut();
+    };
+    match decode_svg_rgba_str(svg_str, target_w, target_h) {
+        Some(decoded) => Box::into_raw(Box::new(decoded)),
+        None => std::ptr::null_mut(),
+    }
+}
+
 /// Decodes a WebP byte buffer into an RGBA8 pixel buffer (`WsDecodedImage`).
 /// Returns null if decoding fails or image exceeds safe Lumia memory bounds.
 #[no_mangle]
@@ -570,5 +630,17 @@ mod tests {
     #[test]
     fn test_decode_webp_rgba_invalid_returns_none() {
         assert!(decode_webp_rgba_bytes(b"not a webp").is_none());
+    }
+
+    #[test]
+    fn test_decode_svg_rgba_basic() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" fill="#ff0000"/></svg>"#;
+        let img = decode_svg_rgba_str(svg, 48, 48).expect("svg should render");
+        assert_eq!(img.width, 48);
+        assert_eq!(img.height, 48);
+        assert_eq!(img.rgba.len(), 48 * 48 * 4);
+        // Center pixel should be opaque red
+        let mid = (24 * 48 + 24) * 4;
+        assert_eq!(&img.rgba[mid..mid + 4], &[255, 0, 0, 255]);
     }
 }

@@ -121,6 +121,13 @@ namespace WebSystemUwp.Services
         private static extern IntPtr ws_decode_webp_rgba(byte[] dataPtr, UIntPtr dataLen);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ws_decode_svg_rgba(
+            byte[] svgPtr,
+            UIntPtr svgLen,
+            uint targetW,
+            uint targetH);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern uint ws_decoded_image_width(IntPtr img);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
@@ -259,12 +266,35 @@ namespace WebSystemUwp.Services
             height = 0;
             if (!IsAvailable || webpBytes == null || webpBytes.Length < 12) return null;
 
-            IntPtr imgHandle = IntPtr.Zero;
+            return ReadDecodedImageAndFree(
+                ws_decode_webp_rgba(webpBytes, (UIntPtr)webpBytes.Length),
+                out width,
+                out height);
+        }
+
+        public static byte[] DecodeSvgToRgba(string svgXml, int targetWidth, int targetHeight, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            if (!IsAvailable || string.IsNullOrWhiteSpace(svgXml)) return null;
+
+            byte[] svgBytes = Encoding.UTF8.GetBytes(svgXml);
+            uint tw = targetWidth > 0 ? (uint)targetWidth : 0u;
+            uint th = targetHeight > 0 ? (uint)targetHeight : 0u;
+            return ReadDecodedImageAndFree(
+                ws_decode_svg_rgba(svgBytes, (UIntPtr)svgBytes.Length, tw, th),
+                out width,
+                out height);
+        }
+
+        private static byte[] ReadDecodedImageAndFree(IntPtr imgHandle, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            if (imgHandle == IntPtr.Zero) return null;
+
             try
             {
-                imgHandle = ws_decode_webp_rgba(webpBytes, (UIntPtr)webpBytes.Length);
-                if (imgHandle == IntPtr.Zero) return null;
-
                 uint w = ws_decoded_image_width(imgHandle);
                 uint h = ws_decoded_image_height(imgHandle);
                 ulong len = ws_decoded_image_len(imgHandle).ToUInt64();
@@ -284,10 +314,7 @@ namespace WebSystemUwp.Services
             }
             finally
             {
-                if (imgHandle != IntPtr.Zero)
-                {
-                    ws_decoded_image_free(imgHandle);
-                }
+                ws_decoded_image_free(imgHandle);
             }
         }
 

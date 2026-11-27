@@ -76,6 +76,7 @@ impl ThemePalette {
 #[derive(Clone, Default)]
 struct CssProps {
     display_none: bool,
+    visibility_hidden: Option<bool>,
     display_flex: Option<FlexDirection>,
     display_inline: Option<bool>,
     flex_wrap: Option<FlexWrap>,
@@ -110,6 +111,9 @@ impl CssProps {
     fn merge_from(&mut self, other: &CssProps) {
         if other.display_none {
             self.display_none = true;
+        }
+        if other.visibility_hidden.is_some() {
+            self.visibility_hidden = other.visibility_hidden;
         }
         if other.display_flex.is_some() {
             self.display_flex = other.display_flex;
@@ -396,6 +400,14 @@ fn parse_declarations(decls: &str) -> CssProps {
                     props.display_inline = Some(true);
                 } else if v == "block" {
                     props.display_inline = Some(false);
+                }
+            }
+            "visibility" => {
+                let v = val.to_ascii_lowercase();
+                if v == "hidden" || v == "collapse" {
+                    props.visibility_hidden = Some(true);
+                } else if v == "visible" || v == "inherit" {
+                    props.visibility_hidden = Some(false);
                 }
             }
             "flex" => {
@@ -918,7 +930,7 @@ fn measure_wrapped_text(
 fn is_ignored_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "script" | "style" | "head" | "noscript" | "template" | "svg" | "meta" | "link" | "title"
+        "script" | "style" | "head" | "noscript" | "template" | "meta" | "link" | "title"
     )
 }
 
@@ -946,7 +958,107 @@ fn is_inline_tag(tag: &str) -> bool {
             | "select"
             | "br"
             | "img"
+            | "svg"
     )
+}
+
+fn collect_visible_text(el_ref: ElementRef<'_>) -> String {
+    let mut raw = String::new();
+    collect_visible_text_rec(el_ref, &mut raw);
+    collapse_whitespace(&raw)
+}
+
+fn collect_visible_text_rec(el_ref: ElementRef<'_>, out: &mut String) {
+    for child in el_ref.children() {
+        match child.value() {
+            Node::Text(t) => out.push_str(t),
+            Node::Element(el) => {
+                let tag = el.name().to_ascii_lowercase();
+                if matches!(tag.as_str(), "style" | "script" | "noscript" | "template") {
+                    continue;
+                }
+                if let Some(ch_el) = ElementRef::wrap(child) {
+                    collect_visible_text_rec(ch_el, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn find_descendant_aria_label(el_ref: ElementRef<'_>) -> Option<String> {
+    for child in el_ref.children() {
+        if let Some(ch_el) = ElementRef::wrap(child) {
+            if let Some(lbl) = ch_el.value().attr("aria-label") {
+                let cleaned = collapse_whitespace(lbl);
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
+            }
+            if let Some(found) = find_descendant_aria_label(ch_el) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let collected: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}…", collected.trim_end())
+    } else {
+        collected
+    }
+}
+
+fn parse_svg_viewbox(vb: Option<&str>) -> Option<(f32, f32)> {
+    let s = vb?.trim();
+    let nums: Vec<f32> = s
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.parse::<f32>().ok())
+        .collect();
+    if nums.len() == 4 && nums[2] > 0.0 && nums[3] > 0.0 {
+        Some((nums[2], nums[3]))
+    } else {
+        None
+    }
+}
+
+fn svg_has_drawable_shape(el_ref: ElementRef<'_>) -> bool {
+    for child in el_ref.children() {
+        if let Some(ch_el) = ElementRef::wrap(child) {
+            let tag = ch_el.value().name().to_ascii_lowercase();
+            if matches!(
+                tag.as_str(),
+                "path" | "rect" | "circle" | "ellipse" | "polygon" | "polyline" | "line" | "text"
+            ) {
+                return true;
+            }
+            if svg_has_drawable_shape(ch_el) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn prepare_svg_xml(raw_html: &str, fg_argb: u32) -> String {
+    let fg_hex = format!("#{:06x}", fg_argb & 0x00FF_FFFF);
+    let mut xml = raw_html
+        .replace("currentColor", &fg_hex)
+        .replace("currentcolor", &fg_hex);
+    if let Some(gt) = xml.find('>') {
+        let open_tag_low = xml[..gt].to_ascii_lowercase();
+        if !open_tag_low.contains("fill=") {
+            if let Some(svg_pos) = open_tag_low.find("<svg") {
+                xml.insert_str(svg_pos + 4, &format!(" fill=\"{}\"", fg_hex));
+            }
+        }
+    }
+    xml
 }
 
 fn is_ad_or_cookie_element(el: &scraper::node::Element) -> bool {
@@ -1350,7 +1462,7 @@ impl<'a> BuildState<'a> {
         if let Some(inline) = el.attr("style") {
             css.merge_from(&parse_declarations(inline));
         }
-        if css.display_none {
+        if css.display_none || css.visibility_hidden == Some(true) {
             return None;
         }
 
@@ -1507,6 +1619,99 @@ impl<'a> BuildState<'a> {
                     text: label,
                     href: src,
                     extra: format!("{}\t{}", inherited_href, alt),
+                },
+            );
+            return Some(id);
+        }
+
+        // Inline SVG <svg>
+        if tag == "svg" {
+            if self.block_images || !svg_has_drawable_shape(el_ref) {
+                return None;
+            }
+            let attr_w = parse_html_dim(el.attr("width")).or(css.width_px);
+            let attr_h = parse_html_dim(el.attr("height")).or(css.height_px);
+            let vb = parse_svg_viewbox(el.attr("viewbox"));
+            let max_svg_w = (self.viewport_content_w - 8.0).max(80.0);
+            let (svg_w, svg_h) = match (attr_w, attr_h) {
+                (Some(w), Some(h)) => {
+                    if w > max_svg_w {
+                        let s = max_svg_w / w;
+                        (max_svg_w, (h * s).max(16.0))
+                    } else {
+                        (w.clamp(16.0, max_svg_w), h.clamp(16.0, 320.0))
+                    }
+                }
+                (Some(w), None) => {
+                    let cw = w.clamp(16.0, max_svg_w);
+                    let ch = vb
+                        .map(|(vw, vh)| (cw * (vh / vw)).clamp(16.0, 240.0))
+                        .unwrap_or(cw);
+                    (cw, ch)
+                }
+                (None, Some(h)) => {
+                    let ch = h.clamp(16.0, 240.0);
+                    let cw = vb
+                        .map(|(vw, vh)| (ch * (vw / vh)).clamp(16.0, max_svg_w))
+                        .unwrap_or(ch);
+                    (cw, ch)
+                }
+                (None, None) => {
+                    if let Some((vw, vh)) = vb {
+                        let ch = 24.0_f32;
+                        let cw = (ch * (vw / vh)).clamp(16.0, max_svg_w);
+                        (cw, ch)
+                    } else {
+                        (24.0, 24.0)
+                    }
+                }
+            };
+
+            let label = el
+                .attr("aria-label")
+                .map(collapse_whitespace)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "[SVG]".to_string());
+            let svg_xml = prepare_svg_xml(&el_ref.html(), fg);
+
+            self.node_count += 1;
+            let svg_style = Style {
+                size: Size {
+                    width: length(svg_w),
+                    height: length(svg_h),
+                },
+                flex_shrink: 0.0,
+                margin: Rect {
+                    left: length(css.margin_left.unwrap_or(0.0)),
+                    right: length(css.margin_right.unwrap_or(4.0)),
+                    top: length(css.margin_top.unwrap_or(2.0)),
+                    bottom: length(css.margin_bottom.unwrap_or(4.0)),
+                },
+                ..Default::default()
+            };
+            let id = self
+                .tree
+                .new_leaf_with_context(
+                    svg_style,
+                    NodeContext::Fixed {
+                        width: svg_w,
+                        height: svg_h,
+                    },
+                )
+                .ok()?;
+            self.metas.insert(
+                id,
+                RenderMeta {
+                    kind: KIND_IMAGE,
+                    flags: FLAG_CENTER,
+                    font_size: 11.0,
+                    fg_color: fg,
+                    bg_color: 0,
+                    border_color: 0,
+                    form_id: -1,
+                    text: label.clone(),
+                    href: format!("svg:{}", svg_xml),
+                    extra: format!("{}\t{}", inherited_href, label),
                 },
             );
             return Some(id);
@@ -1686,13 +1891,17 @@ impl<'a> BuildState<'a> {
         if tag == "textarea" {
             let name = el.attr("name").unwrap_or("").trim().to_string();
             let placeholder = el.attr("placeholder").unwrap_or("").trim().to_string();
-            let value = collapse_whitespace(&el_ref.text().collect::<String>());
+            let value = collect_visible_text(el_ref);
             let (fid, action_method) = match form_ctx {
                 Some(fc) => (fc.form_id, format!("{}|{}", fc.action, fc.method)),
                 None => (-1, format!("{}|GET", self.base_url)),
             };
+            let rows = el
+                .attr("rows")
+                .and_then(|r| r.trim().parse::<u32>().ok())
+                .unwrap_or(2);
             let box_w = self.viewport_content_w.max(140.0);
-            let box_h = 74.0_f32;
+            let box_h = if rows <= 1 { 40.0_f32 } else { 74.0_f32 };
             self.node_count += 1;
             let style = Style {
                 size: Size {
@@ -1824,14 +2033,23 @@ impl<'a> BuildState<'a> {
                 .to_ascii_lowercase();
             let name = el.attr("name").unwrap_or("").trim().to_string();
             let val = el.attr("value").unwrap_or("").to_string();
-            let mut label = collapse_whitespace(&el_ref.text().collect::<String>());
+            let mut label = collect_visible_text(el_ref);
             if label.is_empty() {
-                label = if val.is_empty() {
-                    "Nút".to_string()
-                } else {
-                    val.clone()
-                };
+                label = el
+                    .attr("aria-label")
+                    .or_else(|| el.attr("title"))
+                    .map(collapse_whitespace)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| find_descendant_aria_label(el_ref))
+                    .unwrap_or_else(|| {
+                        if val.is_empty() {
+                            "Nút".to_string()
+                        } else {
+                            val.clone()
+                        }
+                    });
             }
+            label = truncate_chars(&label, 28);
             if !inherited_href.is_empty() && form_ctx.is_none() {
                 return self.build_text_leaf(
                     label,
@@ -1843,8 +2061,10 @@ impl<'a> BuildState<'a> {
                 );
             }
             let (fid, action_method) = match form_ctx {
-                Some(fc) => (fc.form_id, format!("{}|{}", fc.action, fc.method)),
-                None => (-1, format!("{}|GET", self.base_url)),
+                Some(fc) if btn_type != "button" => {
+                    (fc.form_id, format!("{}|{}", fc.action, fc.method))
+                }
+                _ => (-1, format!("{}|GET", self.base_url)),
             };
             return self.build_button_leaf(
                 label,
@@ -1966,6 +2186,54 @@ impl<'a> BuildState<'a> {
         }
         self.flush_inline_run(&mut inline_run, &mut child_ids);
 
+        if let Some(fc) = owned_form_ctx.as_ref() {
+            let has_input = self.subtree_has_meta(&child_ids, |m| m.kind == KIND_INPUT && m.form_id == fc.form_id);
+            let has_submit = self.subtree_has_meta(&child_ids, |m| {
+                m.kind == KIND_BUTTON && m.form_id == fc.form_id && !m.extra.ends_with("\treset")
+            });
+            if has_input && !has_submit {
+                let action_low = fc.action.to_ascii_lowercase();
+                let submit_label = if action_low.contains("search") || action_low.contains("google") {
+                    "🔍 Tìm kiếm".to_string()
+                } else {
+                    "Tìm / Gửi".to_string()
+                };
+                let action_method = format!("{}|{}", fc.action, fc.method);
+                if let Some(btn_id) = self.build_button_leaf(
+                    submit_label,
+                    fc.form_id,
+                    &action_method,
+                    "",
+                    "",
+                    "submit",
+                    self.palette.button_bg,
+                    0xFFFF_FFFF,
+                ) {
+                    child_ids.push(btn_id);
+                }
+            }
+        }
+
+        if child_ids.is_empty() && tag == "a" && !resolved_href.is_empty() {
+            if let Some(aria) = el
+                .attr("aria-label")
+                .or_else(|| el.attr("title"))
+                .map(collapse_whitespace)
+                .filter(|s| !s.is_empty())
+            {
+                if let Some(tid) = self.build_text_leaf(
+                    truncate_chars(&aria, 28),
+                    self.palette.link_fg,
+                    font_size,
+                    flags | FLAG_UNDERLINE,
+                    &resolved_href,
+                    false,
+                ) {
+                    child_ids.push(tid);
+                }
+            }
+        }
+
         if child_ids.is_empty() && css.bg_color.is_none() && css.height_px.is_none() {
             return None;
         }
@@ -2070,6 +2338,25 @@ impl<'a> BuildState<'a> {
             );
         }
         Some(id)
+    }
+
+    fn subtree_has_meta<F>(&self, roots: &[NodeId], pred: F) -> bool
+    where
+        F: Fn(&RenderMeta) -> bool + Copy,
+    {
+        for &nid in roots {
+            if let Some(meta) = self.metas.get(&nid) {
+                if pred(meta) {
+                    return true;
+                }
+            }
+            if let Ok(children) = self.tree.children(nid) {
+                if self.subtree_has_meta(&children, pred) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn build_button_leaf(
@@ -2837,5 +3124,89 @@ mod tests {
         assert!(imgs.iter().any(|(t, h)| t == "LazyPhoto" && h == "https://cdn.example.com/photo%201.jpg"));
         assert!(imgs.iter().any(|(t, h)| t == "SrcsetPhoto" && h == "https://example.com/img/small.jpg"));
         assert!(imgs.iter().any(|(t, h)| t == "PicPhoto" && h == "https://cdn.example.com/pic.webp"));
+    }
+
+    #[test]
+    fn test_google_style_svg_and_form_buttons() {
+        let html = r#"
+            <html><head><style>
+                .hidden-popup { visibility: hidden; }
+            </style></head><body>
+                <div class="hidden-popup">Should Not Appear</div>
+                <svg aria-label="Google" height="56" viewBox="0 0 160 56" width="160">
+                    <path d="M10 10 H150 V46 H10 Z" fill="#4285F4"/>
+                </svg>
+                <a href="https://apps.example.com" aria-label="Google apps">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>
+                </a>
+                <form action="/search" method="GET">
+                    <button type="button" aria-label="Voice">
+                        <style>.v{display:flex;}</style>
+                        <svg viewBox="0 0 24 24"><path d="M12 2 L12 22"/></svg>
+                    </button>
+                    <textarea name="q" rows="1" placeholder="Ask Google"></textarea>
+                </form>
+            </body></html>
+        "#;
+        let buf = render_html_with_options(
+            html,
+            "https://www.google.com",
+            "",
+            RenderOptions {
+                viewport_width: 380.0,
+                dark_mode: true,
+                block_ads: false,
+                block_images: false,
+                reader_mode: false,
+            },
+        );
+        let b = &buf.bytes;
+        let mut off = 0usize;
+        assert_eq!(read_u32_le(b, &mut off), RENDER_MAGIC_V2);
+        let _w = read_f32_le(b, &mut off);
+        let _h = read_f32_le(b, &mut off);
+        let _title = read_str(b, &mut off);
+        let count = read_u32_le(b, &mut off);
+
+        let mut saw_logo = false;
+        let mut saw_apps_icon = false;
+        let mut saw_voice_btn = false;
+        let mut saw_submit_btn = false;
+        let mut saw_hidden = false;
+
+        for _ in 0..count {
+            let kind = b[off];
+            off += 2;
+            off += 20;
+            let _fg = read_u32_le(b, &mut off);
+            let _bg = read_u32_le(b, &mut off);
+            let _border = read_u32_le(b, &mut off);
+            let form_id = read_u32_le(b, &mut off) as i32;
+            let text = read_str(b, &mut off);
+            let href = read_str(b, &mut off);
+            let extra = read_str(b, &mut off);
+
+            if text == "Should Not Appear" {
+                saw_hidden = true;
+            }
+            if kind == KIND_IMAGE && text == "Google" && href.starts_with("svg:") {
+                saw_logo = true;
+            }
+            if kind == KIND_IMAGE && href.starts_with("svg:") && extra.starts_with("https://apps.example.com") {
+                saw_apps_icon = true;
+            }
+            if kind == KIND_BUTTON && text == "Voice" {
+                assert!(!text.contains(".v{"));
+                saw_voice_btn = true;
+            }
+            if kind == KIND_BUTTON && text.contains("Tìm kiếm") && form_id > 0 {
+                saw_submit_btn = true;
+            }
+        }
+        assert!(!saw_hidden);
+        assert!(saw_logo);
+        assert!(saw_apps_icon);
+        assert!(saw_voice_btn);
+        assert!(saw_submit_btn);
     }
 }

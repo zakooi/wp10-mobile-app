@@ -608,23 +608,75 @@ namespace WebSystemUwp
             }
         }
 
+        private static string TryExtractSvgXml(string src)
+        {
+            if (string.IsNullOrEmpty(src)) return null;
+            if (src.StartsWith("svg:", StringComparison.Ordinal))
+            {
+                return src.Substring(4);
+            }
+            if (src.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
+            {
+                int commaIdx = src.IndexOf(',');
+                if (commaIdx <= 0) return null;
+                string meta = src.Substring(0, commaIdx);
+                string payload = src.Substring(commaIdx + 1);
+                try
+                {
+                    if (meta.IndexOf(";base64", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        byte[] raw = Convert.FromBase64String(payload);
+                        return System.Text.Encoding.UTF8.GetString(raw);
+                    }
+                    return Uri.UnescapeDataString(payload);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+            return null;
+        }
+
         private async void LoadRustPageImagesAsync(RustRenderPage page, ulong navSeq, CancellationToken ct)
         {
             if (page == null) return;
 
-            var allSources = page.Items
+            var distinctImages = page.Items
                 .Where(i => i.Kind == RenderItemKind.Image && !string.IsNullOrWhiteSpace(i.Href))
-                .Select(i => i.Href)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(32)
+                .GroupBy(i => i.Href, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .Take(48)
                 .ToList();
 
-            if (allSources.Count == 0) return;
+            if (distinctImages.Count == 0) return;
 
+            ICanvasResourceCreator creator = (ICanvasResourceCreator)RustVirtualCanvas.Device ?? CanvasDevice.GetSharedDevice();
             bool anyInlineLoaded = false;
-            foreach (var src in allSources)
+            foreach (var imgItem in distinctImages)
             {
                 if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
+                string src = imgItem.Href;
+
+                string svgXml = TryExtractSvgXml(src);
+                if (svgXml != null)
+                {
+                    int targetW = Math.Max(16, Math.Min(512, (int)Math.Ceiling(imgItem.Width * 2)));
+                    int targetH = Math.Max(16, Math.Min(512, (int)Math.Ceiling(imgItem.Height * 2)));
+                    byte[] rgba = RustEngineBridge.DecodeSvgToRgba(svgXml, targetW, targetH, out int w, out int h);
+                    if (rgba != null && w > 0 && h > 0)
+                    {
+                        try
+                        {
+                            _rustImageCache[src] = CanvasBitmap.CreateFromBytes(
+                                creator, rgba, w, h, DirectXPixelFormat.R8G8B8A8UIntNormalized);
+                            anyInlineLoaded = true;
+                        }
+                        catch { }
+                    }
+                    continue;
+                }
+
                 byte[] inlineBytes = TryDecodeDataImageBase64(src);
                 if (inlineBytes != null)
                 {
@@ -641,7 +693,8 @@ namespace WebSystemUwp
                 RustVirtualCanvas.Invalidate();
             }
 
-            var imageUrls = allSources
+            var imageUrls = distinctImages
+                .Select(i => i.Href)
                 .Where(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                             u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -775,9 +828,15 @@ namespace WebSystemUwp
                             }
                             else
                             {
-                                ds.FillRectangle(rect, item.BackgroundColor);
-                                ds.DrawRectangle(rect, item.BorderColor, 1.0f);
-                                if (!string.IsNullOrEmpty(item.Text))
+                                if (item.BackgroundColor.A > 0)
+                                {
+                                    ds.FillRectangle(rect, item.BackgroundColor);
+                                }
+                                if (item.BorderColor.A > 0)
+                                {
+                                    ds.DrawRectangle(rect, item.BorderColor, 1.0f);
+                                }
+                                if (!string.IsNullOrEmpty(item.Text) && item.BorderColor.A > 0)
                                 {
                                     var fmt = GetCachedTextFormat(item.FontSize * scale, false, true, true);
                                     ds.DrawText(item.Text, rect, item.ForegroundColor, fmt);
