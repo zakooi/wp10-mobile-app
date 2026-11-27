@@ -4,7 +4,10 @@ use scraper::{Html, Node, Selector};
 use std::cell::RefCell;
 
 const MAX_DOM_NODES: usize = 6000;
+const MAX_DOM_DEPTH: usize = 96;
 const MAX_TIMERS_PER_PAGE: usize = 48;
+const MAX_SINGLE_SCRIPT_BYTES: usize = 48 * 1024;
+const MAX_TOTAL_JS_BYTES: usize = 96 * 1024;
 const SCRIPT_CHUNK_SEPARATOR: &str = "\n/*__WS_SCRIPT_SEP__*/\n";
 
 #[derive(Clone)]
@@ -99,20 +102,20 @@ impl DomState {
 
         let mut inline_scripts = Vec::new();
         for child in doc.tree.root().children() {
-            state.import_ego_node(child, 0, &mut inline_scripts);
+            state.import_ego_node(child, 0, &mut inline_scripts, 0);
         }
 
-        if let Some(title_id) = state.find_first_tag(0, "title") {
+        if let Some(title_id) = state.find_first_tag(0, "title", 0) {
             state.title = state.collect_text(title_id).trim().to_string();
         }
         if state.doc_el_id.is_none() {
-            state.doc_el_id = state.find_first_tag(0, "html");
+            state.doc_el_id = state.find_first_tag(0, "html", 0);
         }
         if state.head_id.is_none() {
-            state.head_id = state.find_first_tag(0, "head");
+            state.head_id = state.find_first_tag(0, "head", 0);
         }
         if state.body_id.is_none() {
-            state.body_id = state.find_first_tag(0, "body");
+            state.body_id = state.find_first_tag(0, "body", 0);
         }
 
         (state, inline_scripts)
@@ -123,14 +126,15 @@ impl DomState {
         node_ref: ego_tree::NodeRef<'_, Node>,
         parent_id: usize,
         inline_scripts: &mut Vec<String>,
+        depth: usize,
     ) {
-        if self.nodes.len() >= MAX_DOM_NODES {
+        if self.nodes.len() >= MAX_DOM_NODES || depth > MAX_DOM_DEPTH {
             return;
         }
         match node_ref.value() {
             Node::Document => {
                 for ch in node_ref.children() {
-                    self.import_ego_node(ch, parent_id, inline_scripts);
+                    self.import_ego_node(ch, parent_id, inline_scripts, depth + 1);
                 }
             }
             Node::Element(el) => {
@@ -174,7 +178,7 @@ impl DomState {
                 }
 
                 for ch in node_ref.children() {
-                    self.import_ego_node(ch, nid, inline_scripts);
+                    self.import_ego_node(ch, nid, inline_scripts, depth + 1);
                 }
 
                 if is_exec_script {
@@ -206,7 +210,10 @@ impl DomState {
         id
     }
 
-    fn find_first_tag(&self, root: usize, target_tag: &str) -> Option<usize> {
+    fn find_first_tag(&self, root: usize, target_tag: &str, depth: usize) -> Option<usize> {
+        if depth > MAX_DOM_DEPTH {
+            return None;
+        }
         let node = self.nodes.get(root)?;
         if let DomKind::Element { tag, .. } = &node.kind {
             if tag == target_tag {
@@ -214,7 +221,7 @@ impl DomState {
             }
         }
         for &ch in &node.children {
-            if let Some(found) = self.find_first_tag(ch, target_tag) {
+            if let Some(found) = self.find_first_tag(ch, target_tag, depth + 1) {
                 return Some(found);
             }
         }
@@ -223,11 +230,14 @@ impl DomState {
 
     fn collect_text(&self, root: usize) -> String {
         let mut out = String::new();
-        self.collect_text_rec(root, &mut out);
+        self.collect_text_rec(root, &mut out, 0);
         out
     }
 
-    fn collect_text_rec(&self, id: usize, out: &mut String) {
+    fn collect_text_rec(&self, id: usize, out: &mut String, depth: usize) {
+        if depth > MAX_DOM_DEPTH {
+            return;
+        }
         let Some(node) = self.nodes.get(id) else {
             return;
         };
@@ -246,13 +256,13 @@ impl DomState {
                     }
                 } else {
                     for &ch in &node.children {
-                        self.collect_text_rec(ch, out);
+                        self.collect_text_rec(ch, out, depth + 1);
                     }
                 }
             }
             _ => {
                 for &ch in &node.children {
-                    self.collect_text_rec(ch, out);
+                    self.collect_text_rec(ch, out, depth + 1);
                 }
             }
         }
@@ -445,7 +455,7 @@ impl DomState {
         let frag = Html::parse_fragment(fragment_html);
         let mut ignored = Vec::new();
         for ch in frag.tree.root().children() {
-            self.import_ego_node(ch, id, &mut ignored);
+            self.import_ego_node(ch, id, &mut ignored, 0);
         }
         self.mutated = true;
     }
@@ -607,7 +617,7 @@ impl DomState {
             return Vec::new();
         }
         let mut out = Vec::new();
-        self.query_rec(root, root, &selectors, limit, &mut out);
+        self.query_rec(root, root, &selectors, limit, &mut out, 0);
         out
     }
 
@@ -618,8 +628,9 @@ impl DomState {
         selectors: &[&str],
         limit: usize,
         out: &mut Vec<usize>,
+        depth: usize,
     ) {
-        if out.len() >= limit {
+        if out.len() >= limit || depth > MAX_DOM_DEPTH {
             return;
         }
         if cur != root && selectors.iter().any(|s| self.matches_selector_chain(cur, s)) {
@@ -630,7 +641,7 @@ impl DomState {
         }
         if let Some(node) = self.nodes.get(cur) {
             for &ch in &node.children {
-                self.query_rec(ch, root, selectors, limit, out);
+                self.query_rec(ch, root, selectors, limit, out, depth + 1);
                 if out.len() >= limit {
                     return;
                 }
@@ -653,7 +664,7 @@ impl DomState {
         let mut out = String::new();
         if let Some(node) = self.nodes.get(id) {
             for &ch in &node.children {
-                self.serialize_node(ch, &mut out, false);
+                self.serialize_node(ch, &mut out, false, 0);
             }
         }
         out
@@ -661,7 +672,7 @@ impl DomState {
 
     fn serialize_outer_html(&self, id: usize) -> String {
         let mut out = String::new();
-        self.serialize_node(id, &mut out, false);
+        self.serialize_node(id, &mut out, false, 0);
         out
     }
 
@@ -672,13 +683,13 @@ impl DomState {
                 let frag = Html::parse_fragment(&combined);
                 let mut ignored = Vec::new();
                 for ch in frag.tree.root().children() {
-                    self.import_ego_node(ch, body, &mut ignored);
+                    self.import_ego_node(ch, body, &mut ignored, 0);
                 }
             } else {
                 let frag = Html::parse_fragment(&combined);
                 let mut ignored = Vec::new();
                 for ch in frag.tree.root().children() {
-                    self.import_ego_node(ch, 0, &mut ignored);
+                    self.import_ego_node(ch, 0, &mut ignored, 0);
                 }
             }
             self.mutated = true;
@@ -688,20 +699,23 @@ impl DomState {
         out.push_str("<!DOCTYPE html>");
         if let Some(root) = self.nodes.first() {
             for &ch in &root.children {
-                self.serialize_node(ch, &mut out, false);
+                self.serialize_node(ch, &mut out, false, 0);
             }
         }
         out
     }
 
-    fn serialize_node(&self, id: usize, out: &mut String, raw_text: bool) {
+    fn serialize_node(&self, id: usize, out: &mut String, raw_text: bool, depth: usize) {
+        if depth > MAX_DOM_DEPTH {
+            return;
+        }
         let Some(node) = self.nodes.get(id) else {
             return;
         };
         match &node.kind {
             DomKind::Document | DomKind::Fragment => {
                 for &ch in &node.children {
-                    self.serialize_node(ch, out, false);
+                    self.serialize_node(ch, out, false, depth + 1);
                 }
             }
             DomKind::Comment => {}
@@ -728,7 +742,7 @@ impl DomState {
                 }
                 let child_raw = tag == "script" || tag == "style";
                 for &ch in &node.children {
-                    self.serialize_node(ch, out, child_raw);
+                    self.serialize_node(ch, out, child_raw, depth + 1);
                 }
                 out.push_str("</");
                 out.push_str(tag);
@@ -864,8 +878,8 @@ pub fn execute_page_scripts(
     }
 
     let mut ctx = Context::default();
-    ctx.runtime_limits_mut().set_loop_iteration_limit(250_000);
-    ctx.runtime_limits_mut().set_recursion_limit(64);
+    ctx.runtime_limits_mut().set_loop_iteration_limit(80_000);
+    ctx.runtime_limits_mut().set_recursion_limit(24);
 
     ACTIVE_DOM.with(|cell| {
         *cell.borrow_mut() = Some(dom_state);
@@ -890,8 +904,15 @@ pub fn execute_page_scripts(
 
     let mut scripts_executed = 0usize;
     let mut errors = 0usize;
+    let mut total_js_bytes = 0usize;
 
     for script in external_scripts.iter().chain(inline_scripts.iter()) {
+        if script.len() > MAX_SINGLE_SCRIPT_BYTES
+            || total_js_bytes.saturating_add(script.len()) > MAX_TOTAL_JS_BYTES
+        {
+            continue;
+        }
+        total_js_bytes += script.len();
         scripts_executed += 1;
         if ctx.eval(Source::from_bytes(script.as_bytes())).is_err() {
             errors += 1;
@@ -1231,7 +1252,7 @@ fn host_set_title(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<
     let new_title = arg_str(args, 0, ctx);
     with_dom(|d| {
         d.title = new_title.clone();
-        if let Some(tid) = d.find_first_tag(0, "title") {
+        if let Some(tid) = d.find_first_tag(0, "title", 0) {
             d.set_text_content(tid, &new_title);
         }
     });

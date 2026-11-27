@@ -4,6 +4,7 @@ use taffy::prelude::*;
 
 const RENDER_MAGIC_V2: u32 = 0x5753_5232; // "WSR2"
 const MAX_RENDER_NODES: usize = 4000;
+const MAX_LAYOUT_DEPTH: usize = 96;
 
 const FLAG_BOLD: u8 = 1;
 const FLAG_ITALIC: u8 = 2;
@@ -964,11 +965,14 @@ fn is_inline_tag(tag: &str) -> bool {
 
 fn collect_visible_text(el_ref: ElementRef<'_>) -> String {
     let mut raw = String::new();
-    collect_visible_text_rec(el_ref, &mut raw);
+    collect_visible_text_rec(el_ref, &mut raw, 0);
     collapse_whitespace(&raw)
 }
 
-fn collect_visible_text_rec(el_ref: ElementRef<'_>, out: &mut String) {
+fn collect_visible_text_rec(el_ref: ElementRef<'_>, out: &mut String, depth: usize) {
+    if depth > MAX_LAYOUT_DEPTH {
+        return;
+    }
     for child in el_ref.children() {
         match child.value() {
             Node::Text(t) => out.push_str(t),
@@ -978,7 +982,7 @@ fn collect_visible_text_rec(el_ref: ElementRef<'_>, out: &mut String) {
                     continue;
                 }
                 if let Some(ch_el) = ElementRef::wrap(child) {
-                    collect_visible_text_rec(ch_el, out);
+                    collect_visible_text_rec(ch_el, out, depth + 1);
                 }
             }
             _ => {}
@@ -986,7 +990,10 @@ fn collect_visible_text_rec(el_ref: ElementRef<'_>, out: &mut String) {
     }
 }
 
-fn find_descendant_aria_label(el_ref: ElementRef<'_>) -> Option<String> {
+fn find_descendant_aria_label(el_ref: ElementRef<'_>, depth: usize) -> Option<String> {
+    if depth > 16 {
+        return None;
+    }
     for child in el_ref.children() {
         if let Some(ch_el) = ElementRef::wrap(child) {
             if let Some(lbl) = ch_el.value().attr("aria-label") {
@@ -995,7 +1002,7 @@ fn find_descendant_aria_label(el_ref: ElementRef<'_>) -> Option<String> {
                     return Some(cleaned);
                 }
             }
-            if let Some(found) = find_descendant_aria_label(ch_el) {
+            if let Some(found) = find_descendant_aria_label(ch_el, depth + 1) {
                 return Some(found);
             }
         }
@@ -1027,7 +1034,10 @@ fn parse_svg_viewbox(vb: Option<&str>) -> Option<(f32, f32)> {
     }
 }
 
-fn svg_has_drawable_shape(el_ref: ElementRef<'_>) -> bool {
+fn svg_has_drawable_shape(el_ref: ElementRef<'_>, depth: usize) -> bool {
+    if depth > 24 {
+        return false;
+    }
     for child in el_ref.children() {
         if let Some(ch_el) = ElementRef::wrap(child) {
             let tag = ch_el.value().name().to_ascii_lowercase();
@@ -1037,7 +1047,7 @@ fn svg_has_drawable_shape(el_ref: ElementRef<'_>) -> bool {
             ) {
                 return true;
             }
-            if svg_has_drawable_shape(ch_el) {
+            if svg_has_drawable_shape(ch_el, depth + 1) {
                 return true;
             }
         }
@@ -1426,8 +1436,9 @@ impl<'a> BuildState<'a> {
         form_ctx: Option<&FormContext>,
         in_table_row: bool,
         inherited_light_bg: bool,
+        depth: usize,
     ) -> Option<NodeId> {
-        if self.node_count >= MAX_RENDER_NODES {
+        if self.node_count >= MAX_RENDER_NODES || depth > MAX_LAYOUT_DEPTH {
             return None;
         }
 
@@ -1626,7 +1637,7 @@ impl<'a> BuildState<'a> {
 
         // Inline SVG <svg>
         if tag == "svg" {
-            if self.block_images || !svg_has_drawable_shape(el_ref) {
+            if self.block_images || !svg_has_drawable_shape(el_ref, 0) {
                 return None;
             }
             let attr_w = parse_html_dim(el.attr("width")).or(css.width_px);
@@ -2040,7 +2051,7 @@ impl<'a> BuildState<'a> {
                     .or_else(|| el.attr("title"))
                     .map(collapse_whitespace)
                     .filter(|s| !s.is_empty())
-                    .or_else(|| find_descendant_aria_label(el_ref))
+                    .or_else(|| find_descendant_aria_label(el_ref, 0))
                     .unwrap_or_else(|| {
                         if val.is_empty() {
                             "Nút".to_string()
@@ -2168,6 +2179,7 @@ impl<'a> BuildState<'a> {
                             active_form,
                             child_is_tr,
                             next_light_bg,
+                            depth + 1,
                         ) {
                             is_first_li_child = false;
                             if is_inline_tag(&child_tag) && !treat_as_inline_self {
@@ -2187,8 +2199,8 @@ impl<'a> BuildState<'a> {
         self.flush_inline_run(&mut inline_run, &mut child_ids);
 
         if let Some(fc) = owned_form_ctx.as_ref() {
-            let has_input = self.subtree_has_meta(&child_ids, |m| m.kind == KIND_INPUT && m.form_id == fc.form_id);
-            let has_submit = self.subtree_has_meta(&child_ids, |m| {
+            let has_input = self.subtree_has_meta(&child_ids, 0, |m| m.kind == KIND_INPUT && m.form_id == fc.form_id);
+            let has_submit = self.subtree_has_meta(&child_ids, 0, |m| {
                 m.kind == KIND_BUTTON && m.form_id == fc.form_id && !m.extra.ends_with("\treset")
             });
             if has_input && !has_submit {
@@ -2340,10 +2352,13 @@ impl<'a> BuildState<'a> {
         Some(id)
     }
 
-    fn subtree_has_meta<F>(&self, roots: &[NodeId], pred: F) -> bool
+    fn subtree_has_meta<F>(&self, roots: &[NodeId], depth: usize, pred: F) -> bool
     where
         F: Fn(&RenderMeta) -> bool + Copy,
     {
+        if depth > MAX_LAYOUT_DEPTH {
+            return false;
+        }
         for &nid in roots {
             if let Some(meta) = self.metas.get(&nid) {
                 if pred(meta) {
@@ -2351,7 +2366,7 @@ impl<'a> BuildState<'a> {
                 }
             }
             if let Ok(children) = self.tree.children(nid) {
-                if self.subtree_has_meta(&children, pred) {
+                if self.subtree_has_meta(&children, depth + 1, pred) {
                     return true;
                 }
             }
@@ -2624,7 +2639,11 @@ impl<'a> BuildState<'a> {
         offset_x: f32,
         offset_y: f32,
         out: &mut Vec<DisplayCommand>,
+        depth: usize,
     ) {
+        if depth > MAX_LAYOUT_DEPTH {
+            return;
+        }
         let Ok(layout) = self.tree.layout(node_id) else {
             return;
         };
@@ -2632,6 +2651,10 @@ impl<'a> BuildState<'a> {
         let y = offset_y + layout.location.y;
         let w = layout.size.width;
         let h = layout.size.height;
+
+        if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+            return;
+        }
 
         if let Some(meta) = self.metas.get(&node_id) {
             if w > 0.0 && h > 0.0 {
@@ -2642,7 +2665,11 @@ impl<'a> BuildState<'a> {
                     y,
                     w,
                     h,
-                    font_size: meta.font_size,
+                    font_size: if meta.font_size.is_finite() && meta.font_size > 0.0 {
+                        meta.font_size
+                    } else {
+                        14.0
+                    },
                     fg_argb: meta.fg_color,
                     bg_argb: meta.bg_color,
                     border_argb: meta.border_color,
@@ -2656,7 +2683,7 @@ impl<'a> BuildState<'a> {
 
         if let Ok(children) = self.tree.children(node_id) {
             for child in children {
-                self.collect_commands(child, x, y, out);
+                self.collect_commands(child, x, y, out, depth + 1);
             }
         }
     }
@@ -2687,7 +2714,12 @@ pub fn render_html_with_options(
     extra_css: &str,
     opts: RenderOptions,
 ) -> WsRenderBuffer {
-    let width = opts.viewport_width.clamp(240.0, 1280.0);
+    let raw_vp = if opts.viewport_width.is_finite() {
+        opts.viewport_width
+    } else {
+        380.0
+    };
+    let width = raw_vp.clamp(240.0, 1280.0);
     let content_max_w = (width - 24.0).max(200.0);
     let palette = ThemePalette::for_mode(opts.dark_mode);
     let document = Html::parse_document(html);
@@ -2722,6 +2754,7 @@ pub fn render_html_with_options(
             None,
             false,
             !opts.dark_mode,
+            0,
         )
     };
 
@@ -2778,12 +2811,16 @@ pub fn render_html_with_options(
         },
     );
 
-    let content_height = state
+    let raw_content_h = state
         .tree
         .layout(root_node)
         .map(|l| l.size.height)
-        .unwrap_or(120.0)
-        .max(120.0);
+        .unwrap_or(120.0);
+    let content_height = if raw_content_h.is_finite() {
+        raw_content_h.max(120.0)
+    } else {
+        120.0
+    };
 
     let mut commands = Vec::new();
     commands.push(DisplayCommand {
@@ -2802,7 +2839,7 @@ pub fn render_html_with_options(
         href: String::new(),
         extra: String::new(),
     });
-    state.collect_commands(root_node, 0.0, 0.0, &mut commands);
+    state.collect_commands(root_node, 0.0, 0.0, &mut commands, 0);
     commands.extend(state.hidden_commands);
 
     serialize_display_list(&title, width, content_height, &commands)

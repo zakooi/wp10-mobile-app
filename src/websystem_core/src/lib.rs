@@ -383,34 +383,58 @@ pub extern "C" fn ws_render_html_v2(
     let js_bytes = unsafe { read_input_bytes(extra_js_ptr, extra_js_len) };
     let ua_bytes = unsafe { read_input_bytes(ua_ptr, ua_len) };
 
-    let html = String::from_utf8_lossy(html_bytes);
-    let base_url = str::from_utf8(url_bytes).unwrap_or("");
-    let extra_css = String::from_utf8_lossy(css_bytes);
-    let extra_js = String::from_utf8_lossy(js_bytes);
-    let ua = str::from_utf8(ua_bytes).unwrap_or("");
+    let html = String::from_utf8_lossy(html_bytes).into_owned();
+    let base_url = str::from_utf8(url_bytes).unwrap_or("").to_string();
+    let extra_css = String::from_utf8_lossy(css_bytes).into_owned();
+    let extra_js = String::from_utf8_lossy(js_bytes).into_owned();
+    let ua = str::from_utf8(ua_bytes).unwrap_or("").to_string();
 
-    let (effective_html, js_scripts, js_errors) = if enable_js != 0 {
-        let js_out = execute_page_scripts(&html, base_url, &extra_js, ua, dark_mode != 0);
-        (
-            std::borrow::Cow::Owned(js_out.html),
-            js_out.scripts_executed as u32,
-            js_out.errors as u32,
-        )
-    } else {
-        (html, 0, 0)
+    let run_render = move || -> WsRenderBuffer {
+        let (effective_html, js_scripts, js_errors) = if enable_js != 0 {
+            let js_out = execute_page_scripts(&html, &base_url, &extra_js, &ua, dark_mode != 0);
+            (
+                std::borrow::Cow::Owned(js_out.html),
+                js_out.scripts_executed as u32,
+                js_out.errors as u32,
+            )
+        } else {
+            (std::borrow::Cow::Borrowed(html.as_str()), 0, 0)
+        };
+
+        let opts = RenderOptions {
+            viewport_width,
+            dark_mode: dark_mode != 0,
+            block_ads: block_ads != 0,
+            block_images: block_images != 0,
+            reader_mode: reader_mode != 0,
+        };
+
+        let mut buf = render_html_with_options(&effective_html, &base_url, &extra_css, opts);
+        buf.js_scripts = js_scripts;
+        buf.js_errors = js_errors;
+        buf
     };
 
-    let opts = RenderOptions {
-        viewport_width,
-        dark_mode: dark_mode != 0,
-        block_ads: block_ads != 0,
-        block_images: block_images != 0,
-        reader_mode: reader_mode != 0,
+    // Run JS + layout on a 4 MB stack thread so 32-bit ARM ThreadPool stacks never overflow.
+    let buf = match std::thread::Builder::new()
+        .name("ws_render".to_string())
+        .stack_size(4 * 1024 * 1024)
+        .spawn(run_render)
+    {
+        Ok(handle) => match handle.join() {
+            Ok(b) => b,
+            Err(_) => WsRenderBuffer {
+                bytes: Vec::new(),
+                js_scripts: 0,
+                js_errors: 1,
+            },
+        },
+        Err(_) => WsRenderBuffer {
+            bytes: Vec::new(),
+            js_scripts: 0,
+            js_errors: 1,
+        },
     };
-
-    let mut buf = render_html_with_options(&effective_html, base_url, &extra_css, opts);
-    buf.js_scripts = js_scripts;
-    buf.js_errors = js_errors;
     Box::into_raw(Box::new(buf))
 }
 
@@ -500,7 +524,7 @@ fn decode_svg_rgba_str(svg_xml: &str, target_w: u32, target_h: u32) -> Option<Ws
     let tree_size = tree.size();
     let src_w = tree_size.width();
     let src_h = tree_size.height();
-    if src_w <= 0.0 || src_h <= 0.0 {
+    if !src_w.is_finite() || !src_h.is_finite() || src_w <= 0.0 || src_h <= 0.0 {
         return None;
     }
 

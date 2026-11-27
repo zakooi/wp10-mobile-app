@@ -106,7 +106,6 @@ namespace WebSystemUwp
             if (_rustNavCts != null)
             {
                 try { _rustNavCts.Cancel(); } catch { }
-                _rustNavCts.Dispose();
                 _rustNavCts = null;
             }
         }
@@ -483,8 +482,10 @@ namespace WebSystemUwp
             RustVirtualCanvas.ClearColor = clear;
 
             float scale = Math.Max(0.5f, _currentZoom / 100.0f);
-            RustVirtualCanvas.Width = Math.Max(280, page.ContentWidth * scale);
-            RustVirtualCanvas.Height = Math.Max(400, page.ContentHeight * scale);
+            float safeW = float.IsNaN(page.ContentWidth) || float.IsInfinity(page.ContentWidth) ? 380f : page.ContentWidth;
+            float safeH = float.IsNaN(page.ContentHeight) || float.IsInfinity(page.ContentHeight) ? 400f : page.ContentHeight;
+            RustVirtualCanvas.Width = Math.Max(280, safeW * scale);
+            RustVirtualCanvas.Height = Math.Max(400, safeH * scale);
             RustBrowserScrollViewer.ChangeView(0, 0, null, true);
             RustVirtualCanvas.Invalidate();
 
@@ -552,7 +553,8 @@ namespace WebSystemUwp
 
                 if (IsWebPBytes(bytes))
                 {
-                    byte[] rgba = RustEngineBridge.DecodeWebPToRgba(bytes, out int w, out int h);
+                    int w = 0, h = 0;
+                    byte[] rgba = await Task.Run(() => RustEngineBridge.DecodeWebPToRgba(bytes, out w, out h));
                     if (rgba == null || w <= 0 || h <= 0) return null;
                     if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return null;
                     return CanvasBitmap.CreateFromBytes(creator, rgba, w, h, DirectXPixelFormat.R8G8B8A8UIntNormalized);
@@ -641,108 +643,116 @@ namespace WebSystemUwp
         private async void LoadRustPageImagesAsync(RustRenderPage page, ulong navSeq, CancellationToken ct)
         {
             if (page == null) return;
-
-            var distinctImages = page.Items
-                .Where(i => i.Kind == RenderItemKind.Image && !string.IsNullOrWhiteSpace(i.Href))
-                .GroupBy(i => i.Href, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .Take(48)
-                .ToList();
-
-            if (distinctImages.Count == 0) return;
-
-            ICanvasResourceCreator creator = (ICanvasResourceCreator)RustVirtualCanvas.Device ?? CanvasDevice.GetSharedDevice();
-            bool anyInlineLoaded = false;
-            foreach (var imgItem in distinctImages)
+            try
             {
-                if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
-                string src = imgItem.Href;
+                var distinctImages = page.Items
+                    .Where(i => i.Kind == RenderItemKind.Image && !string.IsNullOrWhiteSpace(i.Href))
+                    .GroupBy(i => i.Href, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.First())
+                    .Take(48)
+                    .ToList();
 
-                string svgXml = TryExtractSvgXml(src);
-                if (svgXml != null)
-                {
-                    int targetW = Math.Max(16, Math.Min(512, (int)Math.Ceiling(imgItem.Width * 2)));
-                    int targetH = Math.Max(16, Math.Min(512, (int)Math.Ceiling(imgItem.Height * 2)));
-                    byte[] rgba = RustEngineBridge.DecodeSvgToRgba(svgXml, targetW, targetH, out int w, out int h);
-                    if (rgba != null && w > 0 && h > 0)
-                    {
-                        try
-                        {
-                            _rustImageCache[src] = CanvasBitmap.CreateFromBytes(
-                                creator, rgba, w, h, DirectXPixelFormat.R8G8B8A8UIntNormalized);
-                            anyInlineLoaded = true;
-                        }
-                        catch { }
-                    }
-                    continue;
-                }
+                if (distinctImages.Count == 0) return;
 
-                byte[] inlineBytes = TryDecodeDataImageBase64(src);
-                if (inlineBytes != null)
-                {
-                    var bmp = await LoadBitmapFromBytesAsync(inlineBytes, navSeq, ct, page);
-                    if (bmp != null)
-                    {
-                        _rustImageCache[src] = bmp;
-                        anyInlineLoaded = true;
-                    }
-                }
-            }
-            if (anyInlineLoaded && !ct.IsCancellationRequested && navSeq == _rustNavSeq && _activeRustPage == page)
-            {
-                RustVirtualCanvas.Invalidate();
-            }
-
-            var imageUrls = distinctImages
-                .Select(i => i.Href)
-                .Where(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                            u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (imageUrls.Count == 0) return;
-
-            string ua = EngineOptimizer.UserAgents.TryGetValue(_currentUa, out var profileUa)
-                ? profileUa
-                : null;
-
-            const int batchSize = 4;
-            for (int i = 0; i < imageUrls.Count; i += batchSize)
-            {
-                if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
-
-                var batch = imageUrls.Skip(i).Take(batchSize).ToList();
-                var responses = await Task.WhenAll(batch.Select(imgUrl => RustEngineBridge.SendHttpRequestAsync(new WebEngineRequest
-                {
-                    Url = imgUrl,
-                    Method = "GET",
-                    UserAgent = ua,
-                    Referer = page.Url,
-                    Accept = "image/jpeg,image/png,image/gif,image/bmp,image/webp;q=0.8,*/*;q=0.5",
-                    TimeoutSeconds = 8,
-                    MaxResponseBytes = 2 * 1024 * 1024,
-                    UseRustTlsEngine = true,
-                    CancellationToken = ct
-                })));
-
-                bool anyLoaded = false;
-                for (int b = 0; b < batch.Count; b++)
+                ICanvasResourceCreator creator = (ICanvasResourceCreator)RustVirtualCanvas.Device ?? CanvasDevice.GetSharedDevice();
+                bool anyInlineLoaded = false;
+                foreach (var imgItem in distinctImages)
                 {
                     if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
-                    var resp = responses[b];
-                    if (resp == null || !resp.IsSuccess) continue;
+                    string src = imgItem.Href;
 
-                    var bmp = await LoadBitmapFromBytesAsync(resp.RawBytes, navSeq, ct, page);
-                    if (bmp != null)
+                    string svgXml = TryExtractSvgXml(src);
+                    if (svgXml != null)
                     {
-                        _rustImageCache[batch[b]] = bmp;
-                        anyLoaded = true;
+                        int targetW = Math.Max(16, Math.Min(512, (int)Math.Ceiling(imgItem.Width * 2)));
+                        int targetH = Math.Max(16, Math.Min(512, (int)Math.Ceiling(imgItem.Height * 2)));
+                        int w = 0, h = 0;
+                        byte[] rgba = await Task.Run(() => RustEngineBridge.DecodeSvgToRgba(svgXml, targetW, targetH, out w, out h));
+                        if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
+                        if (rgba != null && w > 0 && h > 0)
+                        {
+                            try
+                            {
+                                _rustImageCache[src] = CanvasBitmap.CreateFromBytes(
+                                    creator, rgba, w, h, DirectXPixelFormat.R8G8B8A8UIntNormalized);
+                                anyInlineLoaded = true;
+                            }
+                            catch { }
+                        }
+                        continue;
+                    }
+
+                    byte[] inlineBytes = TryDecodeDataImageBase64(src);
+                    if (inlineBytes != null)
+                    {
+                        var bmp = await LoadBitmapFromBytesAsync(inlineBytes, navSeq, ct, page);
+                        if (bmp != null)
+                        {
+                            _rustImageCache[src] = bmp;
+                            anyInlineLoaded = true;
+                        }
                     }
                 }
-
-                if (anyLoaded && !ct.IsCancellationRequested && navSeq == _rustNavSeq && _activeRustPage == page)
+                if (anyInlineLoaded && !ct.IsCancellationRequested && navSeq == _rustNavSeq && _activeRustPage == page)
                 {
                     RustVirtualCanvas.Invalidate();
                 }
+
+                var imageUrls = distinctImages
+                    .Select(i => i.Href)
+                    .Where(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                                u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (imageUrls.Count == 0) return;
+
+                string ua = EngineOptimizer.UserAgents.TryGetValue(_currentUa, out var profileUa)
+                    ? profileUa
+                    : null;
+
+                const int batchSize = 4;
+                for (int i = 0; i < imageUrls.Count; i += batchSize)
+                {
+                    if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
+
+                    var batch = imageUrls.Skip(i).Take(batchSize).ToList();
+                    var responses = await Task.WhenAll(batch.Select(imgUrl => RustEngineBridge.SendHttpRequestAsync(new WebEngineRequest
+                    {
+                        Url = imgUrl,
+                        Method = "GET",
+                        UserAgent = ua,
+                        Referer = page.Url,
+                        Accept = "image/jpeg,image/png,image/gif,image/bmp,image/webp;q=0.8,*/*;q=0.5",
+                        TimeoutSeconds = 8,
+                        MaxResponseBytes = 2 * 1024 * 1024,
+                        UseRustTlsEngine = true,
+                        CancellationToken = ct
+                    })));
+
+                    bool anyLoaded = false;
+                    for (int b = 0; b < batch.Count; b++)
+                    {
+                        if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return;
+                        var resp = responses[b];
+                        if (resp == null || !resp.IsSuccess) continue;
+
+                        var bmp = await LoadBitmapFromBytesAsync(resp.RawBytes, navSeq, ct, page);
+                        if (bmp != null)
+                        {
+                            _rustImageCache[batch[b]] = bmp;
+                            anyLoaded = true;
+                        }
+                    }
+
+                    if (anyLoaded && !ct.IsCancellationRequested && navSeq == _rustNavSeq && _activeRustPage == page)
+                    {
+                        RustVirtualCanvas.Invalidate();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("LoadRustPageImagesAsync error: " + ex.Message);
             }
         }
 
@@ -777,27 +787,36 @@ namespace WebSystemUwp
                 ? _rustFindMatchIndices[_rustFindActiveSlot]
                 : -1;
 
-            foreach (var region in args.InvalidatedRegions)
+            try
             {
-                using (var ds = sender.CreateDrawingSession(region))
+                foreach (var region in args.InvalidatedRegions)
                 {
-                    for (int idx = 0; idx < _activeRustPage.Items.Count; idx++)
+                    using (var ds = sender.CreateDrawingSession(region))
                     {
-                        var item = _activeRustPage.Items[idx];
-                        float x = item.X * scale;
-                        float y = item.Y * scale;
-                        float w = item.Width * scale;
-                        float h = item.Height * scale;
-
-                        if (x + w < region.Left ||
-                            x > region.Right ||
-                            y + h < region.Top ||
-                            y > region.Bottom)
+                        for (int idx = 0; idx < _activeRustPage.Items.Count; idx++)
                         {
-                            continue;
-                        }
+                            var item = _activeRustPage.Items[idx];
+                            float x = item.X * scale;
+                            float y = item.Y * scale;
+                            float w = item.Width * scale;
+                            float h = item.Height * scale;
 
-                        var rect = new Rect(x, y, w, h);
+                            if (float.IsNaN(x) || float.IsNaN(y) || float.IsNaN(w) || float.IsNaN(h) ||
+                                float.IsInfinity(x) || float.IsInfinity(y) || float.IsInfinity(w) || float.IsInfinity(h) ||
+                                w <= 0 || h <= 0)
+                            {
+                                continue;
+                            }
+
+                            if (x + w < region.Left ||
+                                x > region.Right ||
+                                y + h < region.Top ||
+                                y > region.Bottom)
+                            {
+                                continue;
+                            }
+
+                            var rect = new Rect(x, y, w, h);
                         if (item.Kind == RenderItemKind.Box || item.Kind == RenderItemKind.Divider)
                         {
                             if (item.BackgroundColor.A > 0)
@@ -958,15 +977,22 @@ namespace WebSystemUwp
                                     ds.DrawLine(x, lineY, x + w, lineY, item.ForegroundColor, Math.Max(1.0f, scale));
                                 }
                             }
+                            }
                         }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("RegionsInvalidated error: " + ex.Message);
             }
         }
 
         private void RustVirtualCanvas_Tapped(object sender, TappedRoutedEventArgs e)
         {
-            if (_activeRustPage != null)
+            try
+            {
+                if (_activeRustPage != null)
             {
                 float scale = Math.Max(0.5f, _currentZoom / 100.0f);
                 Point pos = e.GetPosition(RustVirtualCanvas);
@@ -1066,7 +1092,12 @@ namespace WebSystemUwp
                             return;
                         }
                     }
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("RustVirtualCanvas_Tapped error: " + ex.Message);
             }
 
             ShowBottomNavBar();

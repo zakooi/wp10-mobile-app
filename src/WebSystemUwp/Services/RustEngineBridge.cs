@@ -382,6 +382,26 @@ namespace WebSystemUwp.Services
                     ErrorMessage = "Yêu cầu đã bị hủy."
                 };
             }
+            catch (ObjectDisposedException)
+            {
+                return new WebEngineResponse
+                {
+                    RequestId = request.RequestId,
+                    IsSuccess = false,
+                    ErrorType = WebEngineErrorType.Cancelled,
+                    ErrorMessage = "Yêu cầu đã bị hủy."
+                };
+            }
+            catch (Exception ex)
+            {
+                return new WebEngineResponse
+                {
+                    RequestId = request.RequestId,
+                    IsSuccess = false,
+                    ErrorType = WebEngineErrorType.Unknown,
+                    ErrorMessage = ex.Message
+                };
+            }
             finally
             {
                 if (acquired) HttpGate.Release();
@@ -858,73 +878,78 @@ namespace WebSystemUwp.Services
 
         private static RustRenderPage DecodeDisplayList(byte[] data, int length, string baseUrl)
         {
-            var page = new RustRenderPage { Url = baseUrl };
-            using (var ms = new MemoryStream(data, 0, length))
-            using (var reader = new BinaryReader(ms, Encoding.UTF8))
+            var page = new RustRenderPage { Url = baseUrl, Title = baseUrl, ContentWidth = 380, ContentHeight = 200 };
+            try
             {
-                uint magic = reader.ReadUInt32();
-                if (magic != RenderMagicWsr2)
+                using (var ms = new MemoryStream(data, 0, length))
+                using (var reader = new BinaryReader(ms, Encoding.UTF8))
                 {
-                    page.Title = baseUrl;
-                    return page;
-                }
-
-                page.ContentWidth = reader.ReadSingle();
-                page.ContentHeight = reader.ReadSingle();
-                page.Title = ReadLengthPrefixedUtf8(reader);
-
-                uint count = reader.ReadUInt32();
-                for (uint i = 0; i < count; i++)
-                {
-                    byte kind = reader.ReadByte();
-                    byte flags = reader.ReadByte();
-                    float x = reader.ReadSingle();
-                    float y = reader.ReadSingle();
-                    float w = reader.ReadSingle();
-                    float h = reader.ReadSingle();
-                    float fontSize = reader.ReadSingle();
-                    uint fg = reader.ReadUInt32();
-                    uint bg = reader.ReadUInt32();
-                    uint border = reader.ReadUInt32();
-                    int formId = reader.ReadInt32();
-                    string text = ReadLengthPrefixedUtf8(reader);
-                    string href = ReadLengthPrefixedUtf8(reader);
-                    string extra = ReadLengthPrefixedUtf8(reader);
-
-                    var item = new RenderDisplayItem
+                    uint magic = reader.ReadUInt32();
+                    if (magic != RenderMagicWsr2)
                     {
-                        Kind = (RenderItemKind)kind,
-                        Bold = (flags & 1) != 0,
-                        Italic = (flags & 2) != 0,
-                        Underline = (flags & 4) != 0,
-                        IsPassword = (flags & 8) != 0,
-                        IsMultiline = (flags & 16) != 0,
-                        CenterText = (flags & 32) != 0,
-                        IsChecked = (flags & 64) != 0,
-                        X = x,
-                        Y = y,
-                        Width = w,
-                        Height = h,
-                        FontSize = fontSize,
-                        ForegroundColor = ArgbToColor(fg),
-                        BackgroundColor = ArgbToColor(bg),
-                        BorderColor = ArgbToColor(border),
-                        FormId = formId,
-                        Text = text,
-                        Href = href,
-                        Extra = extra
-                    };
-
-                    if (item.Kind == RenderItemKind.Hidden)
-                    {
-                        page.HiddenInputs.Add(item);
+                        return page;
                     }
-                    else
+
+                    float cw = reader.ReadSingle();
+                    float ch = reader.ReadSingle();
+                    page.ContentWidth = float.IsNaN(cw) || float.IsInfinity(cw) ? 380 : cw;
+                    page.ContentHeight = float.IsNaN(ch) || float.IsInfinity(ch) ? 200 : ch;
+                    page.Title = ReadLengthPrefixedUtf8(reader);
+
+                    uint count = reader.ReadUInt32();
+                    for (uint i = 0; i < count; i++)
                     {
-                        page.Items.Add(item);
+                        byte kind = reader.ReadByte();
+                        byte flags = reader.ReadByte();
+                        float x = reader.ReadSingle();
+                        float y = reader.ReadSingle();
+                        float w = reader.ReadSingle();
+                        float h = reader.ReadSingle();
+                        float fontSize = reader.ReadSingle();
+                        uint fg = reader.ReadUInt32();
+                        uint bg = reader.ReadUInt32();
+                        uint border = reader.ReadUInt32();
+                        int formId = reader.ReadInt32();
+                        string text = ReadLengthPrefixedUtf8(reader);
+                        string href = ReadLengthPrefixedUtf8(reader);
+                        string extra = ReadLengthPrefixedUtf8(reader);
+
+                        var item = new RenderDisplayItem
+                        {
+                            Kind = (RenderItemKind)kind,
+                            Bold = (flags & 1) != 0,
+                            Italic = (flags & 2) != 0,
+                            Underline = (flags & 4) != 0,
+                            IsPassword = (flags & 8) != 0,
+                            IsMultiline = (flags & 16) != 0,
+                            CenterText = (flags & 32) != 0,
+                            IsChecked = (flags & 64) != 0,
+                            X = float.IsNaN(x) || float.IsInfinity(x) ? 0 : x,
+                            Y = float.IsNaN(y) || float.IsInfinity(y) ? 0 : y,
+                            Width = float.IsNaN(w) || float.IsInfinity(w) ? 0 : w,
+                            Height = float.IsNaN(h) || float.IsInfinity(h) ? 0 : h,
+                            FontSize = float.IsNaN(fontSize) || float.IsInfinity(fontSize) || fontSize <= 0 ? 14 : fontSize,
+                            ForegroundColor = ArgbToColor(fg),
+                            BackgroundColor = ArgbToColor(bg),
+                            BorderColor = ArgbToColor(border),
+                            FormId = formId,
+                            Text = text,
+                            Href = href,
+                            Extra = extra
+                        };
+
+                        if (item.Kind == RenderItemKind.Hidden)
+                        {
+                            page.HiddenInputs.Add(item);
+                        }
+                        else
+                        {
+                            page.Items.Add(item);
+                        }
                     }
                 }
             }
+            catch { }
 
             return page;
         }
