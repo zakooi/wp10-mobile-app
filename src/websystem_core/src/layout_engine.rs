@@ -1090,6 +1090,14 @@ fn default_tag_style(tag: &str, palette: &ThemePalette) -> (CssProps, u8) {
     (p, flags)
 }
 
+fn encode_url_spaces(url: String) -> String {
+    if url.contains(' ') {
+        url.replace(' ', "%20")
+    } else {
+        url
+    }
+}
+
 fn resolve_url(base_url: &str, href: &str) -> String {
     let h = href.trim();
     if h.is_empty()
@@ -1099,30 +1107,115 @@ fn resolve_url(base_url: &str, href: &str) -> String {
         || h.starts_with("data:")
         || h.starts_with('#')
     {
-        return h.to_string();
+        return if h.starts_with("data:") {
+            h.to_string()
+        } else {
+            encode_url_spaces(h.to_string())
+        };
     }
 
     let Some(scheme_idx) = base_url.find("://") else {
-        return h.to_string();
+        return encode_url_spaces(h.to_string());
     };
     let scheme = &base_url[..scheme_idx];
     let after_scheme = &base_url[scheme_idx + 3..];
     let authority = after_scheme.split('/').next().unwrap_or("");
 
     if h.starts_with("//") {
-        return format!("{}:{}", scheme, h);
+        return encode_url_spaces(format!("{}:{}", scheme, h));
     }
     if h.starts_with('/') {
-        return format!("{}://{}{}", scheme, authority, h);
+        return encode_url_spaces(format!("{}://{}{}", scheme, authority, h));
     }
 
     let base_no_query = base_url.split('?').next().unwrap_or(base_url);
     if let Some(last_slash) = base_no_query.rfind('/') {
         if last_slash >= scheme_idx + 3 {
-            return format!("{}/{}", &base_no_query[..last_slash], h);
+            return encode_url_spaces(format!("{}/{}", &base_no_query[..last_slash], h));
         }
     }
-    format!("{}://{}/{}", scheme, authority, h)
+    encode_url_spaces(format!("{}://{}/{}", scheme, authority, h))
+}
+
+fn is_placeholder_img_src(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("about:blank") {
+        return true;
+    }
+    let low = t.to_ascii_lowercase();
+    if low.starts_with("data:image/svg+xml") {
+        return true;
+    }
+    if low.starts_with("data:image/") && t.len() < 220 {
+        return true;
+    }
+    false
+}
+
+fn pick_url_from_srcset(srcset: &str) -> Option<&str> {
+    for part in srcset.split(',') {
+        let candidate = part.trim().split_whitespace().next().unwrap_or("");
+        if !candidate.is_empty() && !is_placeholder_img_src(candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn extract_img_src(el_ref: ElementRef<'_>, base_url: &str) -> String {
+    let el = el_ref.value();
+    if let Some(src) = el.attr("src") {
+        if !is_placeholder_img_src(src) {
+            return resolve_url(base_url, src);
+        }
+    }
+
+    for attr in [
+        "data-src",
+        "data-original",
+        "data-lazy-src",
+        "data-url",
+        "data-image",
+        "data-echo",
+    ] {
+        if let Some(val) = el.attr(attr) {
+            if !is_placeholder_img_src(val) {
+                return resolve_url(base_url, val);
+            }
+        }
+    }
+
+    for attr in ["data-srcset", "srcset"] {
+        if let Some(ss) = el.attr(attr) {
+            if let Some(chosen) = pick_url_from_srcset(ss) {
+                return resolve_url(base_url, chosen);
+            }
+        }
+    }
+
+    if let Some(parent_el) = el_ref.parent().and_then(ElementRef::wrap) {
+        if parent_el.value().name().eq_ignore_ascii_case("picture") {
+            if let Ok(sel) = Selector::parse("source") {
+                for src_el in parent_el.select(&sel) {
+                    let sv = src_el.value();
+                    for attr in ["srcset", "data-srcset"] {
+                        if let Some(ss) = sv.attr(attr) {
+                            if let Some(chosen) = pick_url_from_srcset(ss) {
+                                return resolve_url(base_url, chosen);
+                            }
+                        }
+                    }
+                    if let Some(u) = sv.attr("src") {
+                        if !is_placeholder_img_src(u) {
+                            return resolve_url(base_url, u);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    resolve_url(base_url, el.attr("src").unwrap_or(""))
 }
 
 pub fn extract_stylesheet_urls(html: &str, base_url: &str) -> Vec<String> {
@@ -1334,13 +1427,15 @@ impl<'a> BuildState<'a> {
             if self.block_images {
                 return None;
             }
-            let src_raw = el.attr("src").or_else(|| el.attr("data-src")).unwrap_or("");
-            let src = resolve_url(self.base_url, src_raw);
+            let src = extract_img_src(el_ref, self.base_url);
             let alt = el.attr("alt").map(collapse_whitespace).unwrap_or_default();
 
             let attr_w = parse_html_dim(el.attr("width")).or(css.width_px);
             let attr_h = parse_html_dim(el.attr("height")).or(css.height_px);
-            if matches!((attr_w, attr_h), (Some(w), Some(h)) if w <= 2.0 && h <= 2.0) {
+            let has_lazy_src = el.attr("data-src").is_some() || el.attr("data-original").is_some();
+            if !has_lazy_src
+                && matches!((attr_w, attr_h), (Some(w), Some(h)) if w <= 2.0 && h <= 2.0)
+            {
                 return None; // skip 1x1 tracking pixels
             }
 
@@ -2689,5 +2784,58 @@ mod tests {
         assert!(saw_checked_radio);
         assert!(saw_unchecked_radio);
         assert!(saw_select);
+    }
+
+    #[test]
+    fn test_lazy_load_srcset_and_picture_images() {
+        let html = r#"
+            <html><body>
+                <img class="lazy" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="https://cdn.example.com/photo 1.jpg" alt="LazyPhoto">
+                <img srcset="/img/small.jpg 320w, /img/large.jpg 640w" alt="SrcsetPhoto">
+                <picture>
+                    <source srcset="https://cdn.example.com/pic.webp 1x">
+                    <img alt="PicPhoto">
+                </picture>
+            </body></html>
+        "#;
+        let buf = render_html_with_options(
+            html,
+            "https://example.com/news",
+            "",
+            RenderOptions {
+                viewport_width: 380.0,
+                dark_mode: false,
+                block_ads: false,
+                block_images: false,
+                reader_mode: false,
+            },
+        );
+        let b = &buf.bytes;
+        let mut off = 0usize;
+        assert_eq!(read_u32_le(b, &mut off), RENDER_MAGIC_V2);
+        let _w = read_f32_le(b, &mut off);
+        let _h = read_f32_le(b, &mut off);
+        let _title = read_str(b, &mut off);
+        let count = read_u32_le(b, &mut off);
+
+        let mut imgs = Vec::new();
+        for _ in 0..count {
+            let kind = b[off];
+            off += 2;
+            off += 20;
+            let _fg = read_u32_le(b, &mut off);
+            let _bg = read_u32_le(b, &mut off);
+            let _border = read_u32_le(b, &mut off);
+            let _form_id = read_u32_le(b, &mut off);
+            let text = read_str(b, &mut off);
+            let href = read_str(b, &mut off);
+            let _extra = read_str(b, &mut off);
+            if kind == KIND_IMAGE {
+                imgs.push((text, href));
+            }
+        }
+        assert!(imgs.iter().any(|(t, h)| t == "LazyPhoto" && h == "https://cdn.example.com/photo%201.jpg"));
+        assert!(imgs.iter().any(|(t, h)| t == "SrcsetPhoto" && h == "https://example.com/img/small.jpg"));
+        assert!(imgs.iter().any(|(t, h)| t == "PicPhoto" && h == "https://cdn.example.com/pic.webp"));
     }
 }

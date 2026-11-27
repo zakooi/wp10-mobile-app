@@ -99,6 +99,43 @@ namespace WebSystemUwp.Services
         private static extern void ws_http_response_free(IntPtr resp);
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ws_http_request_v3(
+            byte[] methodPtr,
+            UIntPtr methodLen,
+            byte[] urlPtr,
+            UIntPtr urlLen,
+            byte[] uaPtr,
+            UIntPtr uaLen,
+            byte[] ctPtr,
+            UIntPtr ctLen,
+            byte[] bodyPtr,
+            UIntPtr bodyLen,
+            byte[] refererPtr,
+            UIntPtr refererLen,
+            byte[] acceptPtr,
+            UIntPtr acceptLen,
+            uint timeoutSecs,
+            uint maxBodyBytes);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ws_decode_webp_rgba(byte[] dataPtr, UIntPtr dataLen);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint ws_decoded_image_width(IntPtr img);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint ws_decoded_image_height(IntPtr img);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern UIntPtr ws_decoded_image_len(IntPtr img);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int ws_decoded_image_copy(IntPtr img, byte[] outBuf, UIntPtr outCap);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void ws_decoded_image_free(IntPtr img);
+
+        [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern void ws_http_clear_cookies();
 
         [DllImport(NativeDllName, CallingConvention = CallingConvention.Cdecl)]
@@ -213,6 +250,44 @@ namespace WebSystemUwp.Services
                     IsLoaded = false,
                     ErrorMessage = ex.GetType().Name + ": " + ex.Message
                 };
+            }
+        }
+
+        public static byte[] DecodeWebPToRgba(byte[] webpBytes, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            if (!IsAvailable || webpBytes == null || webpBytes.Length < 12) return null;
+
+            IntPtr imgHandle = IntPtr.Zero;
+            try
+            {
+                imgHandle = ws_decode_webp_rgba(webpBytes, (UIntPtr)webpBytes.Length);
+                if (imgHandle == IntPtr.Zero) return null;
+
+                uint w = ws_decoded_image_width(imgHandle);
+                uint h = ws_decoded_image_height(imgHandle);
+                ulong len = ws_decoded_image_len(imgHandle).ToUInt64();
+                if (w == 0 || h == 0 || len == 0 || len > int.MaxValue) return null;
+
+                var rgba = new byte[(int)len];
+                int copied = ws_decoded_image_copy(imgHandle, rgba, (UIntPtr)rgba.Length);
+                if (copied <= 0) return null;
+
+                width = (int)w;
+                height = (int)h;
+                return rgba;
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                if (imgHandle != IntPtr.Zero)
+                {
+                    ws_decoded_image_free(imgHandle);
+                }
             }
         }
 
@@ -554,16 +629,24 @@ namespace WebSystemUwp.Services
             byte[] bodyBytes = string.IsNullOrEmpty(request.Body)
                 ? new byte[0]
                 : Encoding.UTF8.GetBytes(request.Body);
+            byte[] refererBytes = string.IsNullOrWhiteSpace(request.Referer)
+                ? new byte[0]
+                : Encoding.UTF8.GetBytes(request.Referer);
+            byte[] acceptBytes = string.IsNullOrWhiteSpace(request.Accept)
+                ? new byte[0]
+                : Encoding.UTF8.GetBytes(request.Accept);
 
             IntPtr handle = IntPtr.Zero;
             try
             {
-                handle = ws_http_request_v2(
+                handle = ws_http_request_v3(
                     methodBytes, (UIntPtr)methodBytes.Length,
                     urlBytes, (UIntPtr)urlBytes.Length,
                     uaBytes, (UIntPtr)uaBytes.Length,
                     ctBytes, (UIntPtr)ctBytes.Length,
                     bodyBytes, (UIntPtr)bodyBytes.Length,
+                    refererBytes, (UIntPtr)refererBytes.Length,
+                    acceptBytes, (UIntPtr)acceptBytes.Length,
                     (uint)Math.Max(5, request.TimeoutSeconds),
                     (uint)Math.Max(0, request.MaxResponseBytes));
 

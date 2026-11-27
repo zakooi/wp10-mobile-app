@@ -28,6 +28,8 @@ namespace WebSystemUwp.Services
         public Dictionary<string, string> Headers { get; set; } = new Dictionary<string, string>();
         public string Body { get; set; }
         public string ContentType { get; set; } = "application/json";
+        public string Referer { get; set; }
+        public string Accept { get; set; }
         public int TimeoutSeconds { get; set; } = 20;
         public int MaxResponseBytes { get; set; } = 0;
         public string UserAgent { get; set; }

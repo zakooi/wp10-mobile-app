@@ -105,6 +105,30 @@ pub fn execute_http_request(
     timeout_secs: u32,
     max_body_bytes: u32,
 ) -> WsHttpResponse {
+    execute_http_request_with_headers(
+        method,
+        url,
+        user_agent,
+        content_type_req,
+        body,
+        "",
+        "",
+        timeout_secs,
+        max_body_bytes,
+    )
+}
+
+pub fn execute_http_request_with_headers(
+    method: &str,
+    url: &str,
+    user_agent: &str,
+    content_type_req: &str,
+    body: &[u8],
+    referer: &str,
+    accept: &str,
+    timeout_secs: u32,
+    max_body_bytes: u32,
+) -> WsHttpResponse {
     let start = Instant::now();
     let trimmed_url = url.trim();
     let method_norm = if method.trim().is_empty() {
@@ -116,6 +140,11 @@ pub fn execute_http_request(
         DEFAULT_USER_AGENT
     } else {
         user_agent.trim()
+    };
+    let accept_hdr = if accept.trim().is_empty() {
+        "*/*"
+    } else {
+        accept.trim()
     };
 
     let req_body: Vec<u8> = if method_norm.eq_ignore_ascii_case("POST")
@@ -131,7 +160,11 @@ pub fn execute_http_request(
         .method(method_norm)
         .uri(trimmed_url)
         .header("User-Agent", ua)
-        .header("Accept", "*/*");
+        .header("Accept", accept_hdr);
+
+    if !referer.trim().is_empty() {
+        builder = builder.header("Referer", referer.trim());
+    }
 
     if !req_body.is_empty() {
         let req_ct = if content_type_req.trim().is_empty() {

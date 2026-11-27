@@ -9,6 +9,7 @@ using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
+using Windows.Graphics.DirectX;
 using Windows.Storage.Streams;
 using Windows.System;
 using Windows.UI;
@@ -531,6 +532,14 @@ namespace WebSystemUwp
             }
         }
 
+        private static bool IsWebPBytes(byte[] bytes)
+        {
+            return bytes != null &&
+                   bytes.Length >= 12 &&
+                   bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F' &&
+                   bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P';
+        }
+
         private async Task<CanvasBitmap> LoadBitmapFromBytesAsync(byte[] bytes, ulong navSeq, CancellationToken ct, RustRenderPage page)
         {
             if (bytes == null || bytes.Length == 0 || bytes.Length > 2 * 1024 * 1024)
@@ -539,15 +548,27 @@ namespace WebSystemUwp
             }
             try
             {
+                ICanvasResourceCreator creator = (ICanvasResourceCreator)RustVirtualCanvas.Device ?? CanvasDevice.GetSharedDevice();
+
+                if (IsWebPBytes(bytes))
+                {
+                    byte[] rgba = RustEngineBridge.DecodeWebPToRgba(bytes, out int w, out int h);
+                    if (rgba == null || w <= 0 || h <= 0) return null;
+                    if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page) return null;
+                    return CanvasBitmap.CreateFromBytes(creator, rgba, w, h, DirectXPixelFormat.R8G8B8A8UIntNormalized);
+                }
+
                 using (var ras = new InMemoryRandomAccessStream())
                 {
                     using (var writer = new DataWriter(ras.GetOutputStreamAt(0)))
                     {
                         writer.WriteBytes(bytes);
                         await writer.StoreAsync();
+                        await writer.FlushAsync();
+                        writer.DetachStream();
                     }
                     ras.Seek(0);
-                    var bmp = await CanvasBitmap.LoadAsync(RustVirtualCanvas, ras);
+                    var bmp = await CanvasBitmap.LoadAsync(creator, ras);
                     if (ct.IsCancellationRequested || navSeq != _rustNavSeq || _activeRustPage != page)
                     {
                         bmp.Dispose();
@@ -642,6 +663,8 @@ namespace WebSystemUwp
                     Url = imgUrl,
                     Method = "GET",
                     UserAgent = ua,
+                    Referer = page.Url,
+                    Accept = "image/jpeg,image/png,image/gif,image/bmp,image/webp;q=0.8,*/*;q=0.5",
                     TimeoutSeconds = 8,
                     MaxResponseBytes = 2 * 1024 * 1024,
                     UseRustTlsEngine = true,

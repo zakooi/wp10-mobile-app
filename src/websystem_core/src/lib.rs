@@ -2,7 +2,9 @@ mod http_client;
 mod js_engine;
 mod layout_engine;
 
-use http_client::{clear_http_cookies, execute_http_request, WsHttpResponse};
+use http_client::{
+    clear_http_cookies, execute_http_request, execute_http_request_with_headers, WsHttpResponse,
+};
 use js_engine::{execute_page_scripts, extract_script_urls};
 use layout_engine::{
     extract_stylesheet_urls, render_html_with_options, RenderOptions, WsRenderBuffer,
@@ -134,6 +136,56 @@ pub extern "C" fn ws_http_request_v2(
     let ct = str::from_utf8(ct_bytes).unwrap_or("");
 
     let response = execute_http_request(method, url, ua, ct, body_bytes, timeout_secs, max_body_bytes);
+    Box::into_raw(Box::new(response))
+}
+
+/// Extended HTTP/HTTPS request with optional `Referer` and `Accept` headers.
+#[no_mangle]
+pub extern "C" fn ws_http_request_v3(
+    method_ptr: *const u8,
+    method_len: usize,
+    url_ptr: *const u8,
+    url_len: usize,
+    ua_ptr: *const u8,
+    ua_len: usize,
+    ct_ptr: *const u8,
+    ct_len: usize,
+    body_ptr: *const u8,
+    body_len: usize,
+    referer_ptr: *const u8,
+    referer_len: usize,
+    accept_ptr: *const u8,
+    accept_len: usize,
+    timeout_secs: u32,
+    max_body_bytes: u32,
+) -> *mut WsHttpResponse {
+    // SAFETY: Caller guarantees valid pointers for the specified lengths during this synchronous call.
+    let method_bytes = unsafe { read_input_bytes(method_ptr, method_len) };
+    let url_bytes = unsafe { read_input_bytes(url_ptr, url_len) };
+    let ua_bytes = unsafe { read_input_bytes(ua_ptr, ua_len) };
+    let ct_bytes = unsafe { read_input_bytes(ct_ptr, ct_len) };
+    let body_bytes = unsafe { read_input_bytes(body_ptr, body_len) };
+    let referer_bytes = unsafe { read_input_bytes(referer_ptr, referer_len) };
+    let accept_bytes = unsafe { read_input_bytes(accept_ptr, accept_len) };
+
+    let method = str::from_utf8(method_bytes).unwrap_or("GET");
+    let url = str::from_utf8(url_bytes).unwrap_or("");
+    let ua = str::from_utf8(ua_bytes).unwrap_or("");
+    let ct = str::from_utf8(ct_bytes).unwrap_or("");
+    let referer = str::from_utf8(referer_bytes).unwrap_or("");
+    let accept = str::from_utf8(accept_bytes).unwrap_or("");
+
+    let response = execute_http_request_with_headers(
+        method,
+        url,
+        ua,
+        ct,
+        body_bytes,
+        referer,
+        accept,
+        timeout_secs,
+        max_body_bytes,
+    );
     Box::into_raw(Box::new(response))
 }
 
@@ -413,5 +465,110 @@ pub extern "C" fn ws_render_buffer_free(buf: *mut WsRenderBuffer) {
         unsafe {
             drop(Box::from_raw(buf));
         }
+    }
+}
+
+pub struct WsDecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+const MAX_DECODED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+fn decode_webp_rgba_bytes(data: &[u8]) -> Option<WsDecodedImage> {
+    let img = image::load_from_memory_with_format(data, image::ImageFormat::WebP).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
+        return None;
+    }
+    let raw = rgba.into_raw();
+    if raw.len() > MAX_DECODED_IMAGE_BYTES {
+        return None;
+    }
+    Some(WsDecodedImage {
+        width,
+        height,
+        rgba: raw,
+    })
+}
+
+/// Decodes a WebP byte buffer into an RGBA8 pixel buffer (`WsDecodedImage`).
+/// Returns null if decoding fails or image exceeds safe Lumia memory bounds.
+#[no_mangle]
+pub extern "C" fn ws_decode_webp_rgba(data_ptr: *const u8, data_len: usize) -> *mut WsDecodedImage {
+    // SAFETY: Caller guarantees `data_ptr` is valid for `data_len` bytes during this call.
+    let raw = unsafe { read_input_bytes(data_ptr, data_len) };
+    if raw.len() < 12 {
+        return std::ptr::null_mut();
+    }
+    match decode_webp_rgba_bytes(raw) {
+        Some(decoded) => Box::into_raw(Box::new(decoded)),
+        None => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ws_decoded_image_width(img: *const WsDecodedImage) -> u32 {
+    if img.is_null() {
+        return 0;
+    }
+    // SAFETY: Non-null handle created by `ws_decode_webp_rgba`.
+    unsafe { (*img).width }
+}
+
+#[no_mangle]
+pub extern "C" fn ws_decoded_image_height(img: *const WsDecodedImage) -> u32 {
+    if img.is_null() {
+        return 0;
+    }
+    // SAFETY: Non-null handle created by `ws_decode_webp_rgba`.
+    unsafe { (*img).height }
+}
+
+#[no_mangle]
+pub extern "C" fn ws_decoded_image_len(img: *const WsDecodedImage) -> usize {
+    if img.is_null() {
+        return 0;
+    }
+    // SAFETY: Non-null handle created by `ws_decode_webp_rgba`.
+    unsafe { (*img).rgba.len() }
+}
+
+#[no_mangle]
+pub extern "C" fn ws_decoded_image_copy(
+    img: *const WsDecodedImage,
+    out_buf: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    if img.is_null() || out_buf.is_null() || out_cap == 0 {
+        return -1;
+    }
+    // SAFETY: Non-null handle and caller-provided writable buffer of `out_cap` bytes.
+    let rgba = unsafe { &(*img).rgba };
+    let len = rgba.len().min(out_cap);
+    let dst = unsafe { slice::from_raw_parts_mut(out_buf, out_cap) };
+    dst[..len].copy_from_slice(&rgba[..len]);
+    len as i32
+}
+
+#[no_mangle]
+pub extern "C" fn ws_decoded_image_free(img: *mut WsDecodedImage) {
+    if !img.is_null() {
+        // SAFETY: Reclaims the `Box` originally allocated by `ws_decode_webp_rgba`.
+        unsafe {
+            drop(Box::from_raw(img));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_webp_rgba_invalid_returns_none() {
+        assert!(decode_webp_rgba_bytes(b"not a webp").is_none());
     }
 }
